@@ -10,7 +10,7 @@ class Product(db.Model):
     price_delivery = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     price_pickup = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     stock = db.Column(db.Integer, nullable=False, default=0)
-    category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True)
+    category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True, index=True)
     image = db.Column(db.String(255))
     additional_images = db.Column(db.Text, default="")
     featured = db.Column(db.Boolean, default=False, nullable=False)

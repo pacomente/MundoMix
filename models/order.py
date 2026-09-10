@@ -9,13 +9,13 @@ class Order(db.Model):
     address = db.Column(db.String(300), default="")
     notes = db.Column(db.Text, default="")
     total = db.Column(db.Numeric(12,2), nullable=False)
-    status = db.Column(db.String(30), default="Nuevo", nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    status = db.Column(db.String(30), default="Nuevo", nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     items = db.relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
 
 class OrderItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    order_id = db.Column(db.Integer, db.ForeignKey("order.id"), nullable=False)
+    order_id = db.Column(db.Integer, db.ForeignKey("order.id"), nullable=False, index=True)
     product_id = db.Column(db.Integer, nullable=True)
     product_name_snapshot = db.Column(db.String(180), nullable=False)
     quantity = db.Column(db.Integer, nullable=False)

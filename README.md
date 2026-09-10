@@ -1,39 +1,47 @@
-# MundoMix — E-commerce local
+# MundoMix — E-commerce + PostgreSQL + Gunicorn
 
-MundoMix es una tienda online local desarrollada con **Python + Flask + SQLite + SQLAlchemy + Jinja2 + HTML5 + CSS3 + JavaScript**.
+MundoMix es una tienda online desarrollada con **Python + Flask + SQLAlchemy + Jinja2 + HTML5 + CSS3 + JavaScript**.
 
-La aplicación conserva su arquitectura existente y está preparada para ejecutarse:
+La aplicación mantiene su arquitectura existente y queda preparada para:
 
-- **Desarrollo:** servidor integrado de Flask.
-- **Producción:** **Gunicorn → Flask → SQLAlchemy → SQLite**.
+- **Desarrollo local:** Flask + SQLite (compatibilidad con la instalación local existente).
+- **Producción:** **Gunicorn → Flask → SQLAlchemy → PostgreSQL**.
+- **Migración:** script seguro **SQLite → PostgreSQL**, conservando IDs y relaciones.
 
-## Funcionalidades
+> La SQLite existente no se elimina ni se sobrescribe durante la migración.
 
-- Homepage responsive con banners administrables.
+## Funcionalidades conservadas
+
+- Homepage responsive con banners.
 - Catálogo con búsqueda, filtros, ordenamiento y paginación.
-- Página de producto con galería y relacionados.
-- Carrito dinámico.
+- Productos y categorías.
+- Carrito.
 - Dos precios finales por producto:
   - `price_delivery`: precio final con envío incluido.
   - `price_pickup`: precio final retirando en local.
-- Checkout por WhatsApp con pedido guardado antes de abrir WhatsApp.
+- Checkout con pedido guardado antes de WhatsApp.
 - Estados de pedido y descuento de stock al confirmar.
 - Panel administrativo responsive.
 - Productos, categorías, banners, pedidos y configuración.
-- Upload de imágenes JPG/JPEG/PNG/WEBP.
-- Contraseñas almacenadas mediante hash de Werkzeug.
-- Endpoint público `/health` para health checks.
-- Endpoint público de Chrome DevTools en `/.well-known/appspecific/com.chrome.devtools.json`.
+- Uploads JPG/JPEG/PNG/WEBP.
+- Hash de contraseñas con Werkzeug.
+- `/health` con comprobación de base de datos.
+- Endpoint de Chrome DevTools.
 
-## Requisitos
+---
 
-- Python 3.12 o superior recomendado.
-- En producción Linux/Unix, Gunicorn.
-- SQLite se mantiene como base de datos actual.
+# 1. Requisitos
 
-> Gunicorn está diseñado principalmente para Linux/Unix. En Windows puede instalarse en algunos entornos, pero no es el escenario de despliegue recomendado. Para producción real se recomienda Linux.
+- Python 3.12+.
+- PostgreSQL para producción.
+- Gunicorn para producción Linux/Unix.
+- Windows continúa siendo válido para desarrollo.
 
-## Instalación en Windows
+Gunicorn está diseñado principalmente para Linux/Unix. Para el servidor real se recomienda Linux. En Windows podés seguir ejecutando Flask para desarrollo y usar PostgreSQL local si querés probar la base antes del despliegue.
+
+---
+
+# 2. Instalación en Windows
 
 Crear entorno virtual:
 
@@ -53,15 +61,18 @@ Instalar dependencias:
 pip install -r requirements.txt
 ```
 
-Copiar `.env.example` como `.env` y ajustar sus valores.
+Copiar `.env.example` a `.env` y completar los valores.
 
-Inicializar la base si es una instalación nueva:
+Para una instalación local nueva con SQLite, `python init_db.py` crea las tablas y el primer administrador. Antes de ejecutarlo, definir una contraseña inicial mediante `ADMIN_INITIAL_PASSWORD`.
+
+Ejemplo en CMD:
 
 ```cmd
+set ADMIN_INITIAL_PASSWORD=una-clave-segura
 python init_db.py
 ```
 
-Iniciar en desarrollo:
+Luego:
 
 ```cmd
 python app.py
@@ -73,17 +84,19 @@ Abrir:
 http://127.0.0.1:5000
 ```
 
-## Variables de entorno
+---
 
-`.env` no debe subirse al repositorio.
+# 3. Variables de entorno
 
-Variables principales:
+El archivo `.env` real nunca debe subirse a Git.
+
+Ejemplo para producción:
 
 ```env
-SECRET_KEY=una-clave-larga-y-aleatoria
 FLASK_ENV=production
 FLASK_DEBUG=0
-DATABASE_URL=sqlite:///instance/mundomix.db
+SECRET_KEY=una-clave-larga-y-aleatoria
+DATABASE_URL=postgresql+psycopg://usuario:password@localhost:5432/mundomix
 WHATSAPP_NUMBER=
 UPLOAD_FOLDER=uploads
 SESSION_COOKIE_SECURE=1
@@ -91,68 +104,194 @@ PORT=8000
 GUNICORN_WORKERS=2
 GUNICORN_THREADS=4
 GUNICORN_TIMEOUT=120
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+DB_POOL_TIMEOUT=30
 ```
 
-En producción, `SECRET_KEY` es obligatoria. Si falta, MundoMix detiene el arranque con un error claro en lugar de utilizar una clave insegura.
+`DATABASE_URL` es obligatoria en producción y debe apuntar a PostgreSQL. No se aceptará SQLite como base principal cuando `FLASK_ENV=production`.
 
-Para generar una clave segura:
+Para generar `SECRET_KEY`:
 
 ```cmd
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-`SESSION_COOKIE_SECURE=1` debe mantenerse cuando el sitio está detrás de HTTPS. Para una prueba directa local por HTTP en modo producción se puede utilizar temporalmente `SESSION_COOKIE_SECURE=0`.
+`SESSION_COOKIE_SECURE=1` corresponde a producción detrás de HTTPS. Para una prueba local directa por HTTP puede utilizarse temporalmente `0`.
 
-## Base de datos
+---
 
-La aplicación utiliza SQLite + SQLAlchemy.
+# 4. PostgreSQL
 
-Por defecto busca:
+Crear una base y un usuario en PostgreSQL según la política de seguridad del servidor.
+
+Ejemplo conceptual:
+
+```text
+Base: mundomix
+Usuario: mundomix_app
+```
+
+No colocar la contraseña real en este README, en el código ni en `.env.example`.
+
+La aplicación utiliza exclusivamente `DATABASE_URL` para decidir dónde está PostgreSQL. No hay `localhost` ni `127.0.0.1` hardcodeados en la conexión.
+
+El driver utilizado es:
+
+```text
+psycopg
+```
+
+---
+
+# 5. Migrar SQLite → PostgreSQL
+
+La migración se realiza con:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+Por defecto toma:
 
 ```text
 instance/mundomix.db
 ```
 
-La ruta se construye desde el directorio real del proyecto, por lo que no depende del directorio desde el cual se lance Gunicorn.
+También se puede indicar otra SQLite:
 
-El arranque ejecuta `db.create_all()` únicamente para crear tablas que todavía no existan. **No utiliza `drop_all()` y no elimina productos, pedidos ni otros datos existentes.**
-
-Si ya existe una base de datos, debe conservarse. `db.create_all()` no es un sistema de migraciones: si en el futuro se agregan o modifican columnas, debe utilizarse una migración segura antes de desplegar ese cambio.
-
-## Administrador
-
-Acceso:
-
-```text
-/admin/login
+```bash
+python scripts/migrate_sqlite_to_postgres.py --sqlite instance/mundomix.db
 ```
 
-Usuario inicial de una instalación nueva:
+### Seguridad de la migración
+
+Antes de leer la SQLite, el script crea automáticamente un backup en:
 
 ```text
+backup/mundomix_YYYYMMDD_HHMMSS.db
+```
+
+La SQLite original no se modifica ni se elimina.
+
+El script además se niega por defecto a insertar en un PostgreSQL que ya contiene registros. Esto evita duplicaciones accidentales. Solo utilizar `--allow-existing-target` después de revisar expresamente el destino:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py --allow-existing-target
+```
+
+### Qué conserva
+
+- IDs.
+- Relaciones.
+- Productos.
+- Categorías.
+- Pedidos.
+- Detalles de pedidos.
+- Administradores.
+- Banners.
+- Configuración.
+- Stock.
+- Precios.
+- Estados.
+- Fechas.
+
+Al finalizar compara automáticamente la cantidad de registros de cada tabla entre SQLite y PostgreSQL y sincroniza las secuencias de IDs de PostgreSQL.
+
+Si encuentra una incompatibilidad de esquema o una diferencia de cantidades, la operación falla y muestra el problema en lugar de declarar una migración exitosa.
+
+---
+
+# 6. Orden de tablas migradas
+
+El orden respeta las relaciones actuales:
+
+```text
+category
 admin
+banner
+setting
+product
+order
+order_item
 ```
 
-Contraseña inicial:
+Las tablas dependientes se insertan después de sus tablas padre.
+
+---
+
+# 7. Estructura actual de datos
+
+Los modelos actuales son:
 
 ```text
-cambiar-esta-clave
+Category
+Product
+Order
+OrderItem
+Admin
+Banner
+Setting
 ```
 
-**Cambiar la contraseña inicial antes de utilizar el sistema en producción.** Las contraseñas se almacenan mediante hash de Werkzeug.
-
-Rutas administrativas principales:
+Relaciones principales:
 
 ```text
-/admin
-/admin/products
-/admin/categories
-/admin/orders
-/admin/banners
-/admin/settings
+Category 1 ─── N Product
+Order    1 ─── N OrderItem
 ```
 
-## Producción con Gunicorn
+`OrderItem.product_id` puede ser `NULL` porque el sistema conserva el nombre del producto en `product_name_snapshot` para mantener el histórico del pedido.
+
+---
+
+# 8. Migraciones futuras
+
+El proyecto incorpora **Flask-Migrate/Alembic** para cambios futuros de esquema.
+
+Una vez instalado el proyecto, si todavía no existe el directorio `migrations`, inicializarlo una sola vez:
+
+```bash
+flask --app wsgi db init
+```
+
+Crear una migración después de modificar modelos:
+
+```bash
+flask --app wsgi db migrate -m "describe el cambio"
+```
+
+Revisar la migración generada antes de ejecutarla.
+
+Aplicarla:
+
+```bash
+flask --app wsgi db upgrade
+```
+
+**No ejecutar migraciones destructivas sin revisar primero el archivo generado.**
+
+En producción, los cambios de esquema deben realizarse mediante Alembic/Flask-Migrate y no mediante `db.drop_all()`.
+
+---
+
+# 9. Importante sobre `db.create_all()`
+
+En desarrollo, MundoMix puede crear tablas faltantes automáticamente para facilitar una instalación local nueva.
+
+En producción esto no se ejecuta automáticamente. El esquema debe estar preparado mediante la migración inicial o mediante Flask-Migrate/Alembic.
+
+Esto evita que un despliegue de producción oculte un problema de migración de esquema.
+
+Nunca se utiliza:
+
+```python
+db.drop_all()
+```
+
+---
+
+# 10. Gunicorn
 
 El punto de entrada WSGI es:
 
@@ -166,7 +305,7 @@ Expone:
 app = create_app()
 ```
 
-Por lo tanto, el comando de producción es:
+El comando de producción es:
 
 ```bash
 gunicorn wsgi:app
@@ -187,17 +326,37 @@ threads = 4
 timeout = 120
 ```
 
-El puerto se puede cambiar con:
+El puerto puede cambiarse con:
 
 ```env
 PORT=8000
 ```
 
-También se pueden ajustar workers, threads y timeout mediante variables `GUNICORN_WORKERS`, `GUNICORN_THREADS` y `GUNICORN_TIMEOUT`.
+Los workers, threads y timeout también pueden configurarse mediante variables de entorno.
 
-La configuración es conservadora porque MundoMix utiliza SQLite, que tiene limitaciones de escritura concurrente. No conviene aumentar indiscriminadamente el número de workers.
+A diferencia de la versión anterior, la configuración ya no está orientada a SQLite en producción: PostgreSQL permite una concurrencia mayor y SQLAlchemy utiliza un pool conservador con `pool_pre_ping`, `pool_recycle`, `pool_size`, `max_overflow` y `pool_timeout`.
 
-## Linux / servidor de producción
+---
+
+# 11. Desarrollo vs producción
+
+### Desarrollo
+
+```bash
+python app.py
+```
+
+### Producción
+
+```bash
+gunicorn wsgi:app
+```
+
+`app.run()` queda únicamente como servidor de desarrollo local.
+
+---
+
+# 12. Linux / servidor
 
 Crear entorno:
 
@@ -212,24 +371,32 @@ Instalar:
 pip install -r requirements.txt
 ```
 
-Configurar `.env` y ejecutar:
+Configurar `.env` con PostgreSQL.
+
+Migrar la SQLite, si existe y corresponde:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+Si el esquema ya está gestionado por Flask-Migrate, aplicar las migraciones pendientes:
+
+```bash
+flask --app wsgi db upgrade
+```
+
+Iniciar:
 
 ```bash
 gunicorn wsgi:app
 ```
 
-Gunicorn escuchará por defecto en:
-
-```text
-0.0.0.0:8000
-```
-
-La arquitectura recomendada para Internet es:
+Arquitectura recomendada:
 
 ```text
 Internet
    ↓
-Nginx / reverse proxy
+Nginx / Reverse Proxy
    ↓
 Gunicorn
    ↓
@@ -237,20 +404,22 @@ Flask
    ↓
 SQLAlchemy
    ↓
-SQLite
+PostgreSQL
 ```
 
-Nginx no forma parte de este proyecto y debe configurarse en el servidor Linux si se necesita HTTPS, dominio, archivos estáticos servidos directamente y reverse proxy.
+Nginx no forma parte de este repositorio.
 
-## Health check
+---
 
-Endpoint público:
+# 13. Health check
+
+Endpoint:
 
 ```text
 /health
 ```
 
-Respuesta:
+Cuando Flask y PostgreSQL están disponibles responde:
 
 ```json
 {"status":"ok"}
@@ -258,103 +427,33 @@ Respuesta:
 
 HTTP `200`.
 
-No requiere autenticación y no expone información sensible.
+El endpoint ejecuta internamente `SELECT 1`. Si PostgreSQL no está disponible, responde `503` y el detalle queda registrado en logs sin exponer credenciales.
 
-## Chrome DevTools
+---
 
-Chrome puede solicitar automáticamente:
+# 14. Chrome DevTools
+
+Chrome puede solicitar:
 
 ```text
 /.well-known/appspecific/com.chrome.devtools.json
 ```
 
-MundoMix responde `200 OK` con JSON vacío para que esta solicitud automática no sea tratada como un 404.
+MundoMix responde `200 OK` con JSON válido y no trata esa solicitud automática como un error 404.
 
-## Archivos estáticos y uploads
+---
 
-Los archivos estáticos se encuentran en:
+# 15. Panel administrativo
 
-```text
-static/
-```
-
-Las imágenes subidas se almacenan en:
+Acceso:
 
 ```text
-uploads/products/
-uploads/banners/
-```
-
-Los nombres generados para uploads utilizan UUID y se restringen a JPG/JPEG/PNG/WEBP.
-
-En un servidor Linux hay que garantizar permisos de escritura para el proceso que ejecuta Gunicorn sobre `uploads/` e `instance/`.
-
-## Precios
-
-Esta lógica comercial se mantiene en todo el proyecto:
-
-```text
-price_delivery = precio final con envío incluido
-price_pickup   = precio final retirando en local
-```
-
-No se agrega una tarifa de envío adicional.
-
-## Stock
-
-Agregar productos al carrito no descuenta stock.
-
-El pedido se guarda como solicitud y el stock se descuenta al pasar el pedido a `Confirmado`, según la lógica existente.
-
-## Estructura
-
-```text
-app.py
-wsgi.py
-gunicorn.conf.py
-config.py
-extensions.py
-init_db.py
-requirements.txt
-.env.example
-models/
-routes/
-templates/
-static/
-uploads/
-instance/
-```
-
-## Pruebas locales recomendadas
-
-Desarrollo:
-
-```cmd
-python app.py
-```
-
-Comprobar:
-
-```text
-/
-/catalogo
-/carrito/
-/health
 /admin/login
-/.well-known/appspecific/com.chrome.devtools.json
 ```
 
-Producción en Linux:
-
-```bash
-gunicorn wsgi:app
-```
-
-Comprobar:
+Rutas principales:
 
 ```text
-/health
-/admin/login
 /admin
 /admin/products
 /admin/categories
@@ -363,8 +462,122 @@ Comprobar:
 /admin/settings
 ```
 
-## Importante sobre las pruebas de este paquete
+El dashboard consulta directamente la base configurada por `DATABASE_URL`.
 
-El código fuente, sintaxis Python y templates pueden validarse sin levantar la aplicación. La prueba HTTP real requiere instalar las dependencias de `requirements.txt` y ejecutar Flask/Gunicorn en un entorno que disponga de esas dependencias.
+No se utilizan estadísticas simuladas.
 
-El entorno donde se preparó este paquete no tenía Flask ni Gunicorn instalados y no tenía acceso de red para descargarlos, por lo que **no se declara como realizada una prueba HTTP real de Gunicorn desde ese entorno**.
+---
+
+# 16. Administrador inicial
+
+En una instalación nueva, `init_db.py` crea el usuario:
+
+```text
+admin
+```
+
+La contraseña inicial **no está hardcodeada**. Debe proporcionarse mediante:
+
+```env
+ADMIN_INITIAL_PASSWORD=una-clave-segura
+```
+
+Después de crear el administrador, eliminar o cambiar esa variable y utilizar una contraseña segura.
+
+Las contraseñas se guardan mediante hash de Werkzeug.
+
+---
+
+# 17. Precios y pedidos
+
+Se mantiene la lógica existente:
+
+```text
+price_delivery = precio final con envío incluido
+price_pickup   = precio final retirando en local
+```
+
+No se agrega un costo de envío adicional.
+
+El checkout guarda el pedido antes de mostrar/redirigir a WhatsApp.
+
+---
+
+# 18. Stock
+
+El stock continúa descontándose al confirmar el pedido según la lógica existente.
+
+No se descuenta simplemente por iniciar el checkout o generar un pedido de WhatsApp.
+
+---
+
+# 19. Uploads
+
+Las imágenes siguen fuera de PostgreSQL:
+
+```text
+uploads/products/
+uploads/banners/
+uploads/categories/
+```
+
+PostgreSQL conserva las rutas/nombres almacenados en los modelos.
+
+Los archivos existentes no forman parte de la migración SQL y no deben eliminarse durante ella.
+
+---
+
+# 20. Seguridad
+
+- `SECRET_KEY` obligatoria en producción.
+- No se utilizan credenciales PostgreSQL hardcodeadas.
+- `.env` está ignorado por Git.
+- Passwords con hash de Werkzeug.
+- Uploads limitados a JPG/JPEG/PNG/WEBP.
+- Nombres de uploads generados con UUID y `secure_filename()`.
+- Cookies HTTPOnly y SameSite.
+- Errores 403/404/405/500 sin traceback al usuario.
+- Excepciones registradas en logs.
+- Pool PostgreSQL con `pool_pre_ping`.
+- No se utiliza `drop_all()`.
+
+---
+
+# 21. Verificación manual después del despliegue
+
+Comprobar como mínimo:
+
+```text
+/
+/health
+/admin/login
+/admin
+/admin/products
+/admin/categories
+/admin/orders
+/admin/banners
+/admin/settings
+/.well-known/appspecific/com.chrome.devtools.json
+```
+
+También comprobar:
+
+- CSS.
+- JavaScript.
+- imágenes.
+- login/logout.
+- creación/modificación de productos.
+- creación de pedidos.
+- aparición del pedido en administración.
+- stock.
+- banners.
+- configuración.
+- WhatsApp.
+
+---
+
+# 22. Nota sobre pruebas de entorno
+
+El repositorio incluye validaciones estáticas y un script de migración verificable, pero una prueba real de PostgreSQL requiere una instancia PostgreSQL accesible y credenciales válidas. No deben inventarse resultados de esa prueba.
+
+Antes de declarar una migración productiva, ejecutar el script y conservar el informe de cantidades que imprime al finalizar.

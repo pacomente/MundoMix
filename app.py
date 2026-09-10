@@ -3,9 +3,10 @@ import secrets
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, send_from_directory, session
+from sqlalchemy import text
 
 from config import Config
-from extensions import db
+from extensions import db, migrate
 from routes.admin import admin_bp
 from routes.cart import cart_bp
 from routes.checkout import checkout_bp
@@ -33,12 +34,16 @@ def create_app():
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["UPLOAD_FOLDER"], "products").mkdir(parents=True, exist_ok=True)
     Path(app.config["UPLOAD_FOLDER"], "banners").mkdir(parents=True, exist_ok=True)
+    Path(app.config["UPLOAD_FOLDER"], "categories").mkdir(parents=True, exist_ok=True)
 
     db.init_app(app)
+    migrate.init_app(app, db)
 
-    # Safe startup initialization: creates only missing tables and never drops data.
-    with app.app_context():
-        db.create_all()
+    # Development can create missing tables for a fresh local install.
+    # Production schema changes must go through Flask-Migrate/Alembic.
+    if environment != "production":
+        with app.app_context():
+            db.create_all()
 
     app.register_blueprint(store_bp)
     app.register_blueprint(cart_bp, url_prefix="/carrito")
@@ -47,7 +52,16 @@ def create_app():
 
     @app.get("/health")
     def health():
-        return jsonify({"status": "ok"}), 200
+        # Check the database without exposing connection details.
+        try:
+            db.session.execute(text("SELECT 1"))
+            db.session.remove()
+            return jsonify({"status": "ok"}), 200
+        except Exception:
+            app.logger.exception("MundoMix health check failed")
+            db.session.rollback()
+            db.session.remove()
+            return jsonify({"status": "error"}), 503
 
     @app.get("/.well-known/appspecific/com.chrome.devtools.json")
     def chrome_devtools_config():
