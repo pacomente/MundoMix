@@ -11,25 +11,6 @@ def _cols(inspector, table):
     return {c["name"] for c in inspector.get_columns(table)} if table in inspector.get_table_names() else set()
 
 def upgrade():
-    ins=sa.inspect(op.get_bind()); tables=set(ins.get_table_names())
-    def addcol(table,name,col):
-        if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
-    # Restaurant configuration.
-    for n,c in {
-       sa.Column("info", sa.Text()),
-sa.Column("accept_orders", sa.Boolean(), server_default=sa.true(), nullable=False),
-sa.Column("pause_message", sa.String(length=300)),
-        # ✅ Definición correcta usando sa.Column para cada campo:
-sa.Column("delivery_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
-sa.Column("pickup_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
-        sa.Column("delivery_fee", sa.Numeric(12, 2)),
-sa.Column("minimum_order", sa.Numeric(12, 2)),
-sa.Column("delivery_zones", sa.JSON()),
-sa.Column("prep_min", sa.Integer()),
-sa.Column("prep_max", sa.Integer()),
-sa.Column("theme_color", sa.String(20)),
-    # Opción 1: Llamadas directas explícitas (Recomendado para evitar confusiones de sintaxis)
-def upgrade():
     op.add_column("restaurant", sa.Column("info", sa.Text()))
     op.add_column("restaurant", sa.Column("accept_orders", sa.Boolean(), server_default=sa.true(), nullable=False))
     op.add_column("restaurant", sa.Column("pause_message", sa.String(300)))
