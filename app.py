@@ -16,6 +16,7 @@ from routes.restaurant_cart import restaurant_cart_bp
 from routes.restaurant_checkout import restaurant_checkout_bp
 from routes.restaurant_auth import restaurant_auth_bp
 from routes.restaurant_panel import restaurant_panel_bp
+from routes.restaurant_menu import restaurant_menu_bp
 
 
 def create_app():
@@ -59,6 +60,7 @@ def create_app():
     app.register_blueprint(restaurant_checkout_bp)
     app.register_blueprint(restaurant_auth_bp)
     app.register_blueprint(restaurant_panel_bp)
+    app.register_blueprint(restaurant_menu_bp)
 
     @app.get("/health")
     def health():
@@ -81,6 +83,20 @@ def create_app():
     @app.route("/uploads/<path:filename>")
     def uploaded_file(filename):
         return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+    @app.template_filter("arg_dt")
+    def arg_dt_filter(value):
+        from routes.restaurant_common import ARG_TZ
+        if not value: return ""
+        return value.replace(tzinfo=__import__("datetime").timezone.utc).astimezone(ARG_TZ).strftime("%d/%m/%Y %H:%M")
+
+    @app.template_filter("fromjson")
+    def fromjson_filter(value):
+        import json
+        try:
+            return json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
 
     @app.context_processor
     def inject_globals():

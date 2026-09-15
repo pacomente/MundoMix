@@ -655,3 +655,21 @@ La revisión de la implementación multi-comercio corrigió problemas de estabil
 - El administrador puede distinguir el local en el listado general de pedidos.
 
 Las pruebas realizadas en este entorno fueron estáticas/puras. No se afirma una prueba de Render o PostgreSQL real porque este entorno no dispone de las credenciales ni de conectividad hacia la instancia de producción.
+
+## Gastronomía 2.0
+
+La sección gastronómica fue ampliada sobre la arquitectura multi-comercio existente. Incluye búsqueda de locales/productos/categorías, filtros, menú ordenable, URLs de producto, personalización mediante grupos/opciones, combos por relación, promociones simples, etiquetas, stock opcional, carrito con notas por producto, delivery/retiro, costo y zonas simples de delivery, pedido mínimo, programación, pausa de pedidos, dashboard ampliado, estados de pedido y estadísticas de 1/7/30 días.
+
+Los pedidos guardan snapshots de nombre, precio, modificadores y notas para que cambios posteriores del menú no alteren el historial.
+
+### Limitación de almacenamiento de imágenes
+
+La inspección del proyecto real mostró que la arquitectura actual de MundoMix **no tenía BYTEA/LargeBinary implementado**: los modelos existentes guardan referencias de archivos y las imágenes se sirven desde `UPLOAD_FOLDER`. Esta actualización conserva ese mecanismo para no romper imágenes ni inventar una migración BYTEA no presente. Si se requiere convertir todo el sistema a `BYTEA`, debe hacerse como una migración separada con backup, carga binaria, endpoint de serving y verificación de rendimiento.
+
+### Pruebas ejecutadas
+
+- `python -m compileall -q .` — OK.
+- Parseo de las 43 plantillas Jinja — 0 errores.
+- `node --check static/js/main.js` — OK.
+- ZIP de entrega — integridad OK.
+- No se pudo ejecutar Flask/Gunicorn contra PostgreSQL real en este entorno porque no están instaladas las dependencias de Flask/psycopg ni se dispone de las credenciales/instancia de producción. No se debe interpretar la validación estática como una prueba de Render.
