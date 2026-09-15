@@ -3,11 +3,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import uuid4
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 from sqlalchemy import desc, func, select
 from extensions import db
-from models import Product, Category, Banner, Order, OrderItem, Admin, Setting
+from models import Product, Category, Banner, Order, OrderItem, Admin, Setting, Restaurant, RestaurantUser, RestaurantCategory, RestaurantProduct, RestaurantHour
 from slugify import make_slug
 
 admin_bp = Blueprint("admin", __name__)
@@ -55,6 +55,20 @@ def unique_slug(name, current_id=None):
         query = Product.query.filter_by(slug=slug)
         if current_id:
             query = query.filter(Product.id != current_id)
+        if not query.first():
+            return slug
+        slug = f"{base}-{i}"
+        i += 1
+
+
+def unique_restaurant_slug(name, current_id=None):
+    base = make_slug(name) or "local"
+    slug = base
+    i = 2
+    while True:
+        query = Restaurant.query.filter_by(slug=slug)
+        if current_id:
+            query = query.filter(Restaurant.id != current_id)
         if not query.first():
             return slug
         slug = f"{base}-{i}"
@@ -354,6 +368,14 @@ def order_detail(id):
                         order = Order.query.get_or_404(id)
                         return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
                     product.stock -= oi.quantity
+                elif oi.restaurant_product_id:
+                    product = RestaurantProduct.query.filter_by(id=oi.restaurant_product_id).with_for_update().first()
+                    if not product or product.stock < oi.quantity:
+                        db.session.rollback()
+                        flash(f"Stock insuficiente para {oi.product_name_snapshot}.", "error")
+                        order = Order.query.get_or_404(id)
+                        return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
+                    product.stock -= oi.quantity
             order.status = new_status
             db.session.commit()
             flash("Pedido confirmado y stock descontado.", "success")
@@ -369,6 +391,69 @@ def order_detail(id):
     else:
         order = Order.query.get_or_404(id)
     return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
+
+
+@admin_bp.route("/locales", methods=["GET", "POST"])
+@admin_bp.route("/restaurants", methods=["GET", "POST"])
+@admin_required
+def restaurants():
+    if request.method == "POST":
+        try:
+            name = request.form.get("name", "").strip()
+            username = request.form.get("username", "").strip()
+            password = request.form.get("password", "")
+            if not name or not username or not password:
+                raise ValueError("Nombre, usuario y contraseña son obligatorios.")
+            if RestaurantUser.query.filter_by(username=username).first():
+                raise ValueError("Ese usuario ya existe.")
+            restaurant = Restaurant(name=name, slug=unique_restaurant_slug(name), description=request.form.get("description", "").strip(), food_type=request.form.get("food_type", "Comida rápida").strip(), address=request.form.get("address", "").strip(), phone=request.form.get("phone", "").strip(), whatsapp=request.form.get("whatsapp", "").strip(), active=True)
+            db.session.add(restaurant); db.session.flush()
+            db.session.add(RestaurantUser(restaurant_id=restaurant.id, username=username, password_hash=generate_password_hash(password)))
+            for day in range(7):
+                db.session.add(RestaurantHour(restaurant_id=restaurant.id, weekday=day, closed=True))
+            db.session.commit(); flash("Local creado con acceso al panel.", "success")
+        except Exception as exc:
+            db.session.rollback(); flash(str(exc), "error")
+    return render_template("admin/restaurants.html", restaurants=Restaurant.query.order_by(Restaurant.name).all())
+
+
+@admin_bp.route("/locales/<int:id>/editar", methods=["GET", "POST"])
+@admin_required
+def restaurant_edit(id):
+    restaurant = Restaurant.query.get_or_404(id)
+    if request.method == "POST":
+        try:
+            name = request.form.get("name", "").strip()
+            if not name: raise ValueError("El nombre es obligatorio.")
+            restaurant.name = name; restaurant.slug = unique_restaurant_slug(name, restaurant.id)
+            restaurant.description = request.form.get("description", "").strip(); restaurant.food_type = request.form.get("food_type", "Comida rápida").strip(); restaurant.address = request.form.get("address", "").strip(); restaurant.phone = request.form.get("phone", "").strip(); restaurant.whatsapp = request.form.get("whatsapp", "").strip(); restaurant.instagram = request.form.get("instagram", "").strip(); restaurant.facebook = request.form.get("facebook", "").strip(); restaurant.active = "active" in request.form; restaurant.accept_orders_closed = "accept_orders_closed" in request.form
+            new_username = request.form.get("username", "").strip(); new_password = request.form.get("password", "")
+            user = restaurant.users[0] if restaurant.users else None
+            if new_username:
+                other = RestaurantUser.query.filter(RestaurantUser.username == new_username, RestaurantUser.id != (user.id if user else -1)).first()
+                if other: raise ValueError("Ese usuario ya existe.")
+                if user: user.username = new_username
+            if new_password:
+                if not user:
+                    user = RestaurantUser(restaurant_id=restaurant.id, username=new_username or f"local_{restaurant.id}", password_hash=generate_password_hash(new_password)); db.session.add(user)
+                else: user.password_hash = generate_password_hash(new_password)
+            db.session.commit(); flash("Local actualizado.", "success")
+        except Exception as exc:
+            db.session.rollback(); flash(str(exc), "error")
+    return render_template("admin/restaurant_form.html", restaurant=restaurant, user=restaurant.users[0] if restaurant.users else None)
+
+
+@admin_bp.post("/locales/<int:id>/toggle")
+@admin_required
+def restaurant_toggle(id):
+    restaurant = Restaurant.query.get_or_404(id); restaurant.active = not restaurant.active; db.session.commit(); flash(f"Local {'activado' if restaurant.active else 'desactivado'}.", "success"); return redirect(url_for("admin.restaurants"))
+
+
+@admin_bp.get("/locales/<int:id>/panel")
+@admin_required
+def restaurant_panel_link(id):
+    restaurant = Restaurant.query.get_or_404(id)
+    return redirect(url_for("restaurants.detail", slug=restaurant.slug))
 
 @admin_bp.route("/configuracion", methods=["GET", "POST"])
 @admin_bp.route("/settings", methods=["GET", "POST"])

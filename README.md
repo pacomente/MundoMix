@@ -581,3 +581,60 @@ También comprobar:
 El repositorio incluye validaciones estáticas y un script de migración verificable, pero una prueba real de PostgreSQL requiere una instancia PostgreSQL accesible y credenciales válidas. No deben inventarse resultados de esa prueba.
 
 Antes de declarar una migración productiva, ejecutar el script y conservar el informe de cantidades que imprime al finalizar.
+
+## Marketplace de locales gastronómicos
+
+MundoMix incorpora un módulo multi-comercio para locales de comida rápida sin reemplazar la tienda de productos propia.
+
+### Flujo público
+
+- `/comida`: catálogo de locales activos.
+- `/comida/<slug>`: mini tienda pública del local.
+- `/comida/<slug>/carrito`: carrito aislado del local.
+- `/comida/<slug>/checkout`: checkout del local y generación del pedido.
+- El pedido se guarda en `Order` antes de redirigir a `https://wa.me/` con el WhatsApp almacenado en `Restaurant.whatsapp`.
+
+### Acceso de comercios
+
+- `/comercio/login`
+- `/comercio/panel`
+
+Cada usuario está asociado a un único `Restaurant`. Todas las consultas del panel filtran por `restaurant_id`; un comercio no puede acceder por URL a recursos de otro.
+
+### Administración MundoMix
+
+En `/admin` existe **Locales gastronómicos** para crear, activar/desactivar y editar locales y sus credenciales iniciales. El alta crea también los siete registros de horarios.
+
+### Base de datos
+
+Se reutilizan `Order` y `OrderItem` para no duplicar el sistema histórico de pedidos. Los pedidos propios mantienen `product_id`; los gastronómicos utilizan `restaurant_id` y `restaurant_product_id`, además del snapshot de nombre/precio ya existente.
+
+Nuevas tablas:
+
+- `restaurant`
+- `restaurant_user`
+- `restaurant_category`
+- `restaurant_product`
+- `restaurant_hour`
+
+La migración incremental está en `migrations/versions/20260915_01_restaurants.py`. No ejecuta `drop_all` y el downgrade es intencionalmente no destructivo.
+
+### Migración en producción
+
+Después de desplegar el código y confirmar que `DATABASE_URL` apunta a PostgreSQL:
+
+```bash
+flask --app wsgi:app db upgrade
+```
+
+Luego comprobar:
+
+```bash
+curl https://TU-DOMINIO/health
+```
+
+Debe devolver `{"status":"ok"}`.
+
+### Imágenes
+
+El proyecto existente actualmente almacena imágenes mediante referencias a archivos bajo `UPLOAD_FOLDER`; este módulo reutiliza ese mecanismo y Pillow para validar imágenes. No se inventó una migración BYTEA sobre el esquema existente porque el modelo real inspeccionado no contiene columnas binarias `BYTEA`. Si se decide migrar también las imágenes históricas a PostgreSQL, debe hacerse como una migración separada y con backup/validación de los archivos existentes.

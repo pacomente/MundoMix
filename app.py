@@ -11,6 +11,11 @@ from routes.admin import admin_bp
 from routes.cart import cart_bp
 from routes.checkout import checkout_bp
 from routes.store import store_bp
+from routes.restaurants import restaurants_bp
+from routes.restaurant_cart import restaurant_cart_bp
+from routes.restaurant_checkout import restaurant_checkout_bp
+from routes.restaurant_auth import restaurant_auth_bp
+from routes.restaurant_panel import restaurant_panel_bp
 
 
 def create_app():
@@ -49,6 +54,11 @@ def create_app():
     app.register_blueprint(cart_bp, url_prefix="/carrito")
     app.register_blueprint(checkout_bp, url_prefix="/checkout")
     app.register_blueprint(admin_bp, url_prefix="/admin")
+    app.register_blueprint(restaurants_bp)
+    app.register_blueprint(restaurant_cart_bp)
+    app.register_blueprint(restaurant_checkout_bp)
+    app.register_blueprint(restaurant_auth_bp)
+    app.register_blueprint(restaurant_panel_bp)
 
     @app.get("/health")
     def health():
@@ -79,7 +89,9 @@ def create_app():
         settings = {s.key: s.value for s in Setting.query.all()}
         cart = session.get("cart", {})
         cart_count = sum(int(v) for v in cart.values()) if cart else 0
-        return {"site_settings": settings, "cart_count": cart_count}
+        restaurant_cart = session.get("restaurant_cart", {})
+        restaurant_cart_count = sum(int(q) for local in restaurant_cart.values() for q in local.values()) if restaurant_cart else 0
+        return {"site_settings": settings, "cart_count": cart_count, "restaurant_cart_count": restaurant_cart_count}
 
     @app.errorhandler(403)
     def forbidden(error):

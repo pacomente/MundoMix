@@ -1,0 +1,2 @@
+/* Commerce panel/login uses the existing MundoMix admin system plus these small adjustments. */
+.commerce-panel .sidebar{background:#111}.commerce-panel .admin-content{max-width:none}.commerce-panel .brand span,.login-box .brand span{color:#e21b23}.commerce-panel .btn,.commerce-panel .ghost-btn{min-height:42px}.commerce-login .flash{margin:12px 0}.commerce-login .login-box .btn{margin-top:8px}
