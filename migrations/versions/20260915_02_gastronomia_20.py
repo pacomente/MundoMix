@@ -16,7 +16,7 @@ def upgrade():
         if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
     # Restaurant configuration.
     for n,c in {
-        "info":sa.Column("accept_orders", sa.Boolean(), server_default=sa.true(), nullable=False),"pause_message":sa.String(300),
+        "info":sa.Column("accept_orders", sa.Boolean(), server_default=sa.true), nullable=False),"pause_message":sa.String(300),
         "delivery_enabled":sa.Boolean(server_default=sa.true(),nullable=False),"pickup_enabled":sa.Boolean(server_default=sa.true(),nullable=False),
         "delivery_fee":sa.Numeric(12,2),"minimum_order":sa.Numeric(12,2),"delivery_zones":sa.JSON(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"theme_color":sa.String(20)
     }.items(): addcol("restaurant",n,c)
