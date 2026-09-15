@@ -8,8 +8,8 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 # Ejemplo:
-revision = 'a1b2c3d4'
-down_revision = "20260915_02_gastronomia_20"  # <-- Asegurate de que este ID coincida con el 'revision' de la migración anterior existente
+revision = '20260915_02_gastronomia_20'
+down_revision = None  # <-- Asegurate de que este ID coincida con el 'revision' de la migración anterior existente
 branch_labels = None
 depends_on = None
 
