@@ -19,7 +19,9 @@ def upgrade():
        sa.Column("info", sa.Text()),
 sa.Column("accept_orders", sa.Boolean(), server_default=sa.true(), nullable=False),
 sa.Column("pause_message", sa.String(length=300)),
-        "delivery_enabled":sa.Boolean(server_default=sa.true(),nullable=False),"pickup_enabled":sa.Boolean(server_default=sa.true(),nullable=False),
+        # ✅ Definición correcta usando sa.Column para cada campo:
+sa.Column("delivery_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
+sa.Column("pickup_enabled", sa.Boolean(), server_default=sa.true(), nullable=False),
         "delivery_fee":sa.Numeric(12,2),"minimum_order":sa.Numeric(12,2),"delivery_zones":sa.JSON(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"theme_color":sa.String(20)
     }.items(): addcol("restaurant",n,c)
     # Product configuration.
