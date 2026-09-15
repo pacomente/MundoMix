@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision="20260915_02_gastronomia_20"
-down_revision = '20260915_01_restaurants'
+revision = '20260915_02_gastronomia_20'
+down_revision = '20260915_01_restaurants'  # Debe apuntar a la primera
 branch_labels=None
 depends_on=None
 
