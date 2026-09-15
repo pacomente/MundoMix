@@ -1,1 +1,0 @@
-MundoMix uses Flask-Migrate/Alembic. The restaurant migration is intentionally incremental and does not recreate existing tables.
