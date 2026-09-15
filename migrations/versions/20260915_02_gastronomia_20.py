@@ -3,7 +3,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision="20260915_02_gastronomia_20"
-down_revision= "20260915_01_restaurants"
+down_revision="20260915_01_restaurants"
 branch_labels=None
 depends_on=None
 
@@ -11,30 +11,15 @@ def _cols(inspector, table):
     return {c["name"] for c in inspector.get_columns(table)} if table in inspector.get_table_names() else set()
 
 def upgrade():
-    op.add_column("restaurant", sa.Column("info", sa.Text()))
-    op.add_column("restaurant", sa.Column("accept_orders", sa.Boolean(), server_default=sa.true(), nullable=False))
-    op.add_column("restaurant", sa.Column("pause_message", sa.String(300)))
-    op.add_column("restaurant", sa.Column("delivery_enabled", sa.Boolean(), server_default=sa.true(), nullable=False))
-    op.add_column("restaurant", sa.Column("pickup_enabled", sa.Boolean(), server_default=sa.true(), nullable=False))
-    op.add_column("restaurant", sa.Column("delivery_fee", sa.Numeric(12, 2)))
-    op.add_column("restaurant", sa.Column("minimum_order", sa.Numeric(12, 2)))
-    op.add_column("restaurant", sa.Column("delivery_zones", sa.JSON()))
-    op.add_column("restaurant", sa.Column("prep_min", sa.Integer()))
-    op.add_column("restaurant", sa.Column("prep_max", sa.Integer()))
-    op.add_column("restaurant", sa.Column("theme_color", sa.String(20)))
-
-def downgrade():
-    op.drop_column("restaurant", "theme_color")
-    op.drop_column("restaurant", "prep_max")
-    op.drop_column("restaurant", "prep_min")
-    op.drop_column("restaurant", "delivery_zones")
-    op.drop_column("restaurant", "minimum_order")
-    op.drop_column("restaurant", "delivery_fee")
-    op.drop_column("restaurant", "pickup_enabled")
-    op.drop_column("restaurant", "delivery_enabled")
-    op.drop_column("restaurant", "pause_message")
-    op.drop_column("restaurant", "accept_orders")
-    op.drop_column("restaurant", "info")
+    ins=sa.inspect(op.get_bind()); tables=set(ins.get_table_names())
+    def addcol(table,name,col):
+        if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
+    # Restaurant configuration.
+    for n,c in {
+        "info":sa.Text(),"accept_orders":sa.Boolean(server_default=sa.true(),nullable=False),"pause_message":sa.String(300),
+        "delivery_enabled":sa.Boolean(server_default=sa.true(),nullable=False),"pickup_enabled":sa.Boolean(server_default=sa.true(),nullable=False),
+        "delivery_fee":sa.Numeric(12,2),"minimum_order":sa.Numeric(12,2),"delivery_zones":sa.JSON(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"theme_color":sa.String(20)
+    }.items(): addcol("restaurant",n,c)
     # Product configuration.
     for n,c in {
         "previous_price":sa.Numeric(12,2),"stock_control":sa.Boolean(server_default=sa.false(),nullable=False),"display_order":sa.Integer(server_default="0",nullable=False),"label":sa.String(40),"nutrition":sa.Text(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"is_combo":sa.Boolean(server_default=sa.false(),nullable=False)
