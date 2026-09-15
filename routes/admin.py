@@ -5,7 +5,7 @@ from uuid import uuid4
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, select
 from extensions import db
 from models import Product, Category, Banner, Order, OrderItem, Admin, Setting
 from slugify import make_slug
@@ -324,25 +324,50 @@ def orders():
 @admin_bp.route("/pedidos/<int:id>", methods=["GET", "POST"])
 @admin_required
 def order_detail(id):
-    order = Order.query.get_or_404(id)
     if request.method == "POST":
+        # Lock the order and the affected products inside one transaction.
+        # PostgreSQL then prevents two concurrent confirmations from both
+        # passing the stock check with the same inventory.
+        order = db.session.execute(
+            select(Order).where(Order.id == id).with_for_update()
+        ).scalar_one_or_none()
+        if order is None:
+            return redirect(url_for("admin.orders"))
         new_status = request.form.get("status")
         if new_status not in STATUSES:
             flash("Estado inválido.", "error")
         elif new_status == "Confirmado" and order.status != "Confirmado":
+            product_ids = sorted({oi.product_id for oi in order.items if oi.product_id})
+            locked_products = {}
+            for product_id in product_ids:
+                product = db.session.execute(
+                    select(Product).where(Product.id == product_id).with_for_update()
+                ).scalar_one_or_none()
+                locked_products[product_id] = product
+
             for oi in order.items:
                 if oi.product_id:
-                    product = Product.query.get(oi.product_id)
+                    product = locked_products.get(oi.product_id)
                     if not product or product.stock < oi.quantity:
+                        db.session.rollback()
                         flash(f"Stock insuficiente para {oi.product_name_snapshot}.", "error")
+                        order = Order.query.get_or_404(id)
                         return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
                     product.stock -= oi.quantity
-            order.status = new_status; db.session.commit(); flash("Pedido confirmado y stock descontado.", "success")
+            order.status = new_status
+            db.session.commit()
+            flash("Pedido confirmado y stock descontado.", "success")
         elif order.status == "Confirmado" and new_status != "Confirmado":
             # Stock is intentionally not restored automatically; this avoids double-restocking and keeps auditability simple.
-            order.status = new_status; db.session.commit(); flash("Estado actualizado. El stock no se repone automáticamente.", "success")
+            order.status = new_status
+            db.session.commit()
+            flash("Estado actualizado. El stock no se repone automáticamente.", "success")
         else:
-            order.status = new_status; db.session.commit(); flash("Pedido actualizado.", "success")
+            order.status = new_status
+            db.session.commit()
+            flash("Pedido actualizado.", "success")
+    else:
+        order = Order.query.get_or_404(id)
     return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
 
 @admin_bp.route("/configuracion", methods=["GET", "POST"])

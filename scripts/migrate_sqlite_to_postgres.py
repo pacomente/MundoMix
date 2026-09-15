@@ -21,9 +21,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(BASE_DIR / ".env")
 DEFAULT_SQLITE = BASE_DIR / "instance" / "mundomix.db"
 BACKUP_DIR = BASE_DIR / "backup"
 
@@ -129,7 +131,14 @@ def main() -> int:
     from extensions import db
     from models import Admin, Banner, Category, Order, OrderItem, Product, Setting
 
-    target_engine = create_engine(url, pool_pre_ping=True)
+    target_engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
+        pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
+    )
     db.metadata.create_all(target_engine)
 
     model_tables = {
@@ -161,6 +170,28 @@ def main() -> int:
             missing = [t for t in TABLE_ORDER if t not in available]
             if missing:
                 print("Advertencia: faltan tablas SQLite y se omitirán: " + ", ".join(missing))
+
+            # Fail rather than silently discard columns that existed in the source.
+            # This is important for a no-data-loss migration: if the SQLite schema
+            # contains application columns that the current SQLAlchemy models do not
+            # know about, the migration must be reviewed instead of ignoring them.
+            model_column_names = {
+                table: {column.name for column in model_table.columns}
+                for table, model_table in model_tables.items()
+            }
+            unexpected = {}
+            for table_name in TABLE_ORDER:
+                if table_name not in available:
+                    continue
+                source_only = sorted(sqlite_columns(src, table_name) - model_column_names[table_name])
+                if source_only:
+                    unexpected[table_name] = source_only
+            if unexpected:
+                details = "; ".join(f"{table}: {', '.join(cols)}" for table, cols in unexpected.items())
+                raise RuntimeError(
+                    "La SQLite contiene columnas que no existen en los modelos actuales. "
+                    "Para evitar pérdida de datos, la migración se detuvo: " + details
+                )
 
             migrated: dict[str, int] = {}
             for table_name in TABLE_ORDER:
