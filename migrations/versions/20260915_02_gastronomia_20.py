@@ -15,11 +15,26 @@ def upgrade():
     def addcol(table,name,col):
         if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
     # Restaurant configuration.
-    for n,c in {
-        "info":sa.Text(),"accept_orders":sa.Boolean(server_default=sa.true(),nullable=False),"pause_message":sa.String(300),
-        "delivery_enabled":sa.Boolean(server_default=sa.true(),nullable=False),"pickup_enabled":sa.Boolean(server_default=sa.true(),nullable=False),
-        "delivery_fee":sa.Numeric(12,2),"minimum_order":sa.Numeric(12,2),"delivery_zones":sa.JSON(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"theme_color":sa.String(20)
-    }.items(): addcol("restaurant",n,c)
+   for n, c in {
+    "info": sa.Column(sa.Text()),
+    "accept_orders": sa.Column(
+        sa.Boolean(), server_default=sa.true(), nullable=False
+    ),
+    "pause_message": sa.Column(sa.String(300)),
+    "delivery_enabled": sa.Column(
+        sa.Boolean(), server_default=sa.true(), nullable=False
+    ),
+    "pickup_enabled": sa.Column(
+        sa.Boolean(), server_default=sa.true(), nullable=False
+    ),
+    "delivery_fee": sa.Column(sa.Numeric(12, 2)),
+    "minimum_order": sa.Column(sa.Numeric(12, 2)),
+    "delivery_zones": sa.Column(sa.JSON()),
+    "prep_min": sa.Column(sa.Integer()),
+    "prep_max": sa.Column(sa.Integer()),
+    "theme_color": sa.Column(sa.String(20)),
+}.items():
+  # addcol usa directamente op.add_column("restaurant", c) cambiando el nombre a n
     # Product configuration.
     for n,c in {
         "previous_price":sa.Numeric(12,2),"stock_control":sa.Boolean(server_default=sa.false(),nullable=False),"display_order":sa.Integer(server_default="0",nullable=False),"label":sa.String(40),"nutrition":sa.Text(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"is_combo":sa.Boolean(server_default=sa.false(),nullable=False)
