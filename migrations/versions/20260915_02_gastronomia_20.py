@@ -15,28 +15,65 @@ def upgrade():
     def addcol(table,name,col):
         if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
     # Restaurant configuration.
-  def upgrade():
-    # Asegurate de que todo el bloque 'for' tenga 4 espacios de sangría:
-    for n, c in {
-        "info": sa.Column(sa.Text()),
-        "accept_orders": sa.Column(
-            sa.Boolean(), server_default=sa.true(), nullable=False
-        ),
-        "pause_message": sa.Column(sa.String(300)),
-        "delivery_enabled": sa.Column(
-            sa.Boolean(), server_default=sa.true(), nullable=False
-        ),
-        "pickup_enabled": sa.Column(
-            sa.Boolean(), server_default=sa.true(), nullable=False
-        ),
-        "delivery_fee": sa.Column(sa.Numeric(12, 2)),
-        "minimum_order": sa.Column(sa.Numeric(12, 2)),
-        "delivery_zones": sa.Column(sa.JSON()),
-        "prep_min": sa.Column(sa.Integer()),
-        "prep_max": sa.Column(sa.Integer()),
-        "theme_color": sa.Column(sa.String(20)),
-    }.items():
-        op.add_column("restaurant", sa.Column(n, c.type, **c.kw))
+ """gastronomia 2.0
+
+Revision ID: 20260915_02_gastronomia_20
+Revises: 20260915_01_restaurants
+Create Date: 2026-09-15
+
+"""
+
+from alembic import op
+import sqlalchemy as sa
+
+revision = "20260915_02_gastronomia_20"
+down_revision = "20260915_01_restaurants"
+branch_labels = None
+depends_on = None
+
+
+def upgrade():
+  columns = {
+      "info": sa.Column(sa.Text()),
+      "accept_orders": sa.Column(
+          sa.Boolean(), server_default=sa.true(), nullable=False
+      ),
+      "pause_message": sa.Column(sa.String(300)),
+      "delivery_enabled": sa.Column(
+          sa.Boolean(), server_default=sa.true(), nullable=False
+      ),
+      "pickup_enabled": sa.Column(
+          sa.Boolean(), server_default=sa.true(), nullable=False
+      ),
+      "delivery_fee": sa.Column(sa.Numeric(12, 2)),
+      "minimum_order": sa.Column(sa.Numeric(12, 2)),
+      "delivery_zones": sa.Column(sa.JSON()),
+      "prep_min": sa.Column(sa.Integer()),
+      "prep_max": sa.Column(sa.Integer()),
+      "theme_color": sa.Column(sa.String(20)),
+  }
+
+  for name, col in columns.items():
+    op.add_column("restaurant", sa.Column(name, col.type, **col.kw))
+
+
+def downgrade():
+  columns = [
+      "info",
+      "accept_orders",
+      "pause_message",
+      "delivery_enabled",
+      "pickup_enabled",
+      "delivery_fee",
+      "minimum_order",
+      "delivery_zones",
+      "prep_min",
+      "prep_max",
+      "theme_color",
+  ]
+
+  for name in columns:
+    op.drop_column("restaurant", name)
     # Product configuration.
     for n,c in {
         "previous_price":sa.Numeric(12,2),"stock_control":sa.Boolean(server_default=sa.false(),nullable=False),"display_order":sa.Integer(server_default="0",nullable=False),"label":sa.String(40),"nutrition":sa.Text(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"is_combo":sa.Boolean(server_default=sa.false(),nullable=False)
