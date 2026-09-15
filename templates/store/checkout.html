@@ -1,1 +1,106 @@
-{% extends "base.html" %}{% block title %}Checkout — MundoMix{% endblock %}{% block content %}<div class="container section"><div class="page-heading"><span class="eyebrow dark">ÚLTIMO PASO</span><h1>Finalizar pedido</h1><p>Completá tus datos y después coordinamos por WhatsApp.</p></div><div class="checkout-grid"><form method="post" class="form-card"><input type="hidden" name="fulfillment_method" value="{{ method }}"><div class="form-section"><h2>Datos de contacto</h2><div class="form-grid"><label>Nombre y apellido *<input name="customer_name" required autocomplete="name" placeholder="Juan Pérez"></label><label>Teléfono / WhatsApp *<input name="customer_phone" required autocomplete="tel" placeholder="291..." inputmode="tel"></label></div></div><div class="form-section"><h2>Entrega</h2><div class="method-switch"><label><input type="radio" name="method_visual" value="delivery" {% if method=='delivery' %}checked{% endif %} onchange="location.href='{{ url_for('cart.view') }}'"> 🚚 Envío</label><label><input type="radio" name="method_visual" value="pickup" {% if method=='pickup' %}checked{% endif %} onchange="location.href='{{ url_for('cart.view') }}'"> 🏪 Retiro</label></div>{% if method=='delivery' %}<label>Dirección *<input name="address" required autocomplete="street-address" placeholder="Calle, número, piso/depto"></label>{% else %}<div class="info-box">🏪 Retiro en local<br><small>{{ site_settings.get('pickup_address','') }}</small></div>{% endif %}</div><div class="form-section"><h2>Comentarios</h2><label>Notas para el pedido<textarea name="notes" rows="4" placeholder="Horarios, referencias, etc."></textarea></label></div><button class="btn checkout-btn" type="submit">Finalizar pedido por WhatsApp <span>→</span></button></form><aside class="summary sticky"><h2>Tu pedido</h2>{% for i in items %}<p><span>{{ i.product.name }} × {{ i.quantity }}</span><strong>${{ "{:,.0f}".format(i.subtotal) }}</strong></p>{% endfor %}<hr><p><span>{{ '🚚 Envío incluido' if method=='delivery' else '🏪 Retiro en local' }}</span></p><div class="total-line"><span>Total</span><strong>${{ "{:,.0f}".format(total) }}</strong></div></aside></div></div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Checkout — MundoMix{% endblock %}
+{% block content %}
+<div class="container section">
+  <div class="page-heading">
+    <span class="eyebrow dark">ÚLTIMO PASO</span>
+    <h1>Finalizar pedido</h1>
+    <p>Completá tus datos y después coordinamos por WhatsApp.</p>
+  </div>
+
+  <div class="checkout-grid">
+    <form method="post" class="form-card" id="checkout-form">
+      <input type="hidden" name="checkout_token" value="{{ session.get('checkout_form_token', '') }}">
+      <input type="hidden" name="fulfillment_method" value="{{ method }}" id="fulfillment-method">
+
+      <div class="form-section">
+        <h2>Datos de contacto</h2>
+        <div class="form-grid">
+          <label>Nombre y apellido *
+            <input name="customer_name" required autocomplete="name" placeholder="Juan Pérez">
+          </label>
+          <label>Teléfono / WhatsApp *
+            <input name="customer_phone" required autocomplete="tel" placeholder="291..." inputmode="tel">
+          </label>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h2>Entrega</h2>
+        <div class="method-switch">
+          <label>
+            <input type="radio" name="method_visual" value="delivery" {% if method == 'delivery' %}checked{% endif %} onchange="changeCheckoutMethod(this.value)">
+            🚚 Envío
+          </label>
+          <label>
+            <input type="radio" name="method_visual" value="pickup" {% if method == 'pickup' %}checked{% endif %} onchange="changeCheckoutMethod(this.value)">
+            🏪 Retiro
+          </label>
+        </div>
+
+        {% if method == 'delivery' %}
+          <label>Dirección *
+            <input name="address" required autocomplete="street-address" placeholder="Calle, número, piso/depto">
+          </label>
+        {% else %}
+          <div class="info-box">
+            🏪 Retiro en local<br>
+            <small>{{ site_settings.get('pickup_address', '') }}</small>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="form-section">
+        <h2>Comentarios</h2>
+        <label>Notas para el pedido
+          <textarea name="notes" rows="4" placeholder="Horarios, referencias, etc."></textarea>
+        </label>
+      </div>
+
+      <button class="btn checkout-btn" type="submit">
+        Finalizar pedido por WhatsApp <span>→</span>
+      </button>
+    </form>
+
+    <aside class="summary sticky">
+      <h2>Tu pedido</h2>
+      {% for i in items %}
+        <p>
+          <span>{{ i[0].name }} × {{ i[1] }}</span>
+          <strong>${{ "{:,.0f}".format(i[3]) }}</strong>
+        </p>
+      {% endfor %}
+      <hr>
+      <p><span>{{ '🚚 Envío incluido' if method == 'delivery' else '🏪 Retiro en local' }}</span></p>
+      <div class="total-line">
+        <span>Total</span>
+        <strong>${{ "{:,.0f}".format(total) }}</strong>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+function changeCheckoutMethod(method) {
+  const url = "{{ url_for('cart.method') }}";
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = url;
+
+  const methodInput = document.createElement("input");
+  methodInput.type = "hidden";
+  methodInput.name = "fulfillment_method";
+  methodInput.value = method;
+  form.appendChild(methodInput);
+
+  const nextInput = document.createElement("input");
+  nextInput.type = "hidden";
+  nextInput.name = "next";
+  nextInput.value = "{{ url_for('checkout.checkout') }}";
+  form.appendChild(nextInput);
+
+  document.body.appendChild(form);
+  form.submit();
+}
+</script>
+{% endblock %}
