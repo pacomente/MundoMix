@@ -1,16 +1,15 @@
 """fix missing columns for restaurant_product and order
 
-Revision ID: 20260915_03
-Revises: 20260915_02
-Create Date: 2026-09-15
+
 
 """
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
+# Ejemplo:
 revision = '20260915_03'
-down_revision = '20260915_02'
+down_revision = 'abc123def456'  # <-- Asegurate de que este ID coincida con el 'revision' de la migración anterior existente
 branch_labels = None
 depends_on = None
 
