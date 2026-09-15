@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260915_01"
+revision = "20260915_01_restaurants.py"
 down_revision = None
 branch_labels = None
 depends_on = None
