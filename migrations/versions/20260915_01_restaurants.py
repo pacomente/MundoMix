@@ -37,6 +37,15 @@ def upgrade():
         op.add_column("order", sa.Column("restaurant_id", sa.Integer(), sa.ForeignKey("restaurant.id", ondelete="SET NULL"), nullable=True)); op.create_index("ix_order_restaurant_id", "order", ["restaurant_id"])
     if "restaurant_product_id" not in [c["name"] for c in inspector.get_columns("order_item")]:
         op.add_column("order_item", sa.Column("restaurant_product_id", sa.Integer(), sa.ForeignKey("restaurant_product.id", ondelete="SET NULL"), nullable=True)); op.create_index("ix_order_item_restaurant_product_id", "order_item", ["restaurant_product_id"])
+    if "stock_deducted" not in [c["name"] for c in inspector.get_columns("order")]:
+        op.add_column("order", sa.Column("stock_deducted", sa.Boolean(), server_default=sa.false(), nullable=False))
+        op.create_index("ix_order_stock_deducted", "order", ["stock_deducted"])
+        # Existing confirmed orders already passed through the old stock-confirmation
+        # flow, so mark them as deducted to prevent a second deduction after deploy.
+        op.execute(sa.text("UPDATE \"order\" SET stock_deducted = TRUE WHERE status = 'Confirmado'"))
+    if "checkout_token" not in [c["name"] for c in inspector.get_columns("order")]:
+        op.add_column("order", sa.Column("checkout_token", sa.String(80), nullable=True))
+        op.create_index("ix_order_checkout_token", "order", ["checkout_token"], unique=True)
 
 
 def downgrade():

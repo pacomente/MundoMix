@@ -3,9 +3,12 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import uuid4
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
+from urllib.parse import urlsplit
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import joinedload
 from extensions import db
 from models import Product, Category, Banner, Order, OrderItem, Admin, Setting, Restaurant, RestaurantUser, RestaurantCategory, RestaurantProduct, RestaurantHour
 from slugify import make_slug
@@ -13,6 +16,15 @@ from slugify import make_slug
 admin_bp = Blueprint("admin", __name__)
 STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En camino", "Entregado", "Cancelado"]
 ALLOWED = {"jpg", "jpeg", "png", "webp"}
+
+
+def _safe_next(value):
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
+        return None
+    return value
 
 
 def admin_required(fn):
@@ -83,7 +95,7 @@ def login():
         if admin and check_password_hash(admin.password_hash, password):
             session.clear()
             session["admin_id"] = admin.id
-            return redirect(request.args.get("next") or url_for("admin.dashboard"))
+            return redirect(_safe_next(request.args.get("next")) or url_for("admin.dashboard"))
         flash("Usuario o contraseña incorrectos.", "error")
     return render_template("admin/login.html")
 
@@ -333,7 +345,8 @@ def orders():
     status = request.args.get("status", "")
     query = Order.query
     if status in STATUSES: query = query.filter_by(status=status)
-    return render_template("admin/orders.html", orders=query.order_by(desc(Order.created_at)).all(), statuses=STATUSES, selected_status=status)
+    orders_list = query.options(joinedload(Order.restaurant)).order_by(desc(Order.created_at)).all()
+    return render_template("admin/orders.html", orders=orders_list, statuses=STATUSES, selected_status=status)
 
 @admin_bp.route("/pedidos/<int:id>", methods=["GET", "POST"])
 @admin_required
@@ -350,7 +363,7 @@ def order_detail(id):
         new_status = request.form.get("status")
         if new_status not in STATUSES:
             flash("Estado inválido.", "error")
-        elif new_status == "Confirmado" and order.status != "Confirmado":
+        elif new_status == "Confirmado" and not order.stock_deducted:
             product_ids = sorted({oi.product_id for oi in order.items if oi.product_id})
             locked_products = {}
             for product_id in product_ids:
@@ -369,7 +382,10 @@ def order_detail(id):
                         return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
                     product.stock -= oi.quantity
                 elif oi.restaurant_product_id:
-                    product = RestaurantProduct.query.filter_by(id=oi.restaurant_product_id).with_for_update().first()
+                    product_query = select(RestaurantProduct).where(RestaurantProduct.id == oi.restaurant_product_id).with_for_update()
+                    if order.restaurant_id is not None:
+                        product_query = product_query.where(RestaurantProduct.restaurant_id == order.restaurant_id)
+                    product = db.session.execute(product_query).scalar_one_or_none()
                     if not product or product.stock < oi.quantity:
                         db.session.rollback()
                         flash(f"Stock insuficiente para {oi.product_name_snapshot}.", "error")
@@ -377,6 +393,7 @@ def order_detail(id):
                         return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
                     product.stock -= oi.quantity
             order.status = new_status
+            order.stock_deducted = True
             db.session.commit()
             flash("Pedido confirmado y stock descontado.", "success")
         elif order.status == "Confirmado" and new_status != "Confirmado":
@@ -412,8 +429,14 @@ def restaurants():
             for day in range(7):
                 db.session.add(RestaurantHour(restaurant_id=restaurant.id, weekday=day, closed=True))
             db.session.commit(); flash("Local creado con acceso al panel.", "success")
-        except Exception as exc:
+        except ValueError as exc:
             db.session.rollback(); flash(str(exc), "error")
+        except IntegrityError:
+            db.session.rollback(); current_app.logger.exception("Restaurant creation integrity error"); flash("No pudimos crear el local. Revisá el usuario y los datos e intentá nuevamente.", "error")
+        except SQLAlchemyError:
+            db.session.rollback(); current_app.logger.exception("Restaurant creation database error"); flash("No pudimos crear el local. Intentá nuevamente.", "error")
+        except Exception:
+            db.session.rollback(); current_app.logger.exception("Unexpected restaurant creation error"); flash("No pudimos crear el local. Intentá nuevamente.", "error")
     return render_template("admin/restaurants.html", restaurants=Restaurant.query.order_by(Restaurant.name).all())
 
 
@@ -438,8 +461,14 @@ def restaurant_edit(id):
                     user = RestaurantUser(restaurant_id=restaurant.id, username=new_username or f"local_{restaurant.id}", password_hash=generate_password_hash(new_password)); db.session.add(user)
                 else: user.password_hash = generate_password_hash(new_password)
             db.session.commit(); flash("Local actualizado.", "success")
-        except Exception as exc:
+        except ValueError as exc:
             db.session.rollback(); flash(str(exc), "error")
+        except IntegrityError:
+            db.session.rollback(); current_app.logger.exception("Restaurant edit integrity error"); flash("No pudimos actualizar el local. Revisá los datos e intentá nuevamente.", "error")
+        except SQLAlchemyError:
+            db.session.rollback(); current_app.logger.exception("Restaurant edit database error"); flash("No pudimos actualizar el local. Intentá nuevamente.", "error")
+        except Exception:
+            db.session.rollback(); current_app.logger.exception("Unexpected restaurant edit error"); flash("No pudimos actualizar el local. Intentá nuevamente.", "error")
     return render_template("admin/restaurant_form.html", restaurant=restaurant, user=restaurant.users[0] if restaurant.users else None)
 
 

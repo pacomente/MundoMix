@@ -1,7 +1,5 @@
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-from flask import current_app
-
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -26,29 +24,38 @@ def _interval_open(now, start_value, end_value):
     return now >= start or now < end
 
 
+def _overnight_from_previous_day(restaurant, weekday, current):
+    previous = next((h for h in restaurant.hours if h.weekday == (weekday - 1) % 7), None)
+    if not previous or previous.closed:
+        return False
+    for start_value, end_value in (
+        (previous.start_time, previous.end_time),
+        (previous.start_time_2, previous.end_time_2),
+    ):
+        start = _parse_time(start_value)
+        end = _parse_time(end_value)
+        if start and end and start > end and current < end:
+            return True
+    return False
+
+
 def restaurant_is_open(restaurant, now=None):
     now = now or datetime.now(ARG_TZ)
     weekday = now.weekday()
+    current = now.time().replace(second=0, microsecond=0)
+
+    # A previous day's overnight interval has priority after midnight. This
+    # remains true even if today's schedule is marked closed or is missing.
+    if _overnight_from_previous_day(restaurant, weekday, current):
+        return True
+
     hour = next((h for h in restaurant.hours if h.weekday == weekday), None)
     if not hour or hour.closed:
         return False
-    current = now.time().replace(second=0, microsecond=0)
     if _interval_open(current, hour.start_time, hour.end_time):
         return True
     if hour.start_time_2 and hour.end_time_2:
         return _interval_open(current, hour.start_time_2, hour.end_time_2)
-    # Overnight windows belong to the previous day's schedule after midnight.
-    previous = next((h for h in restaurant.hours if h.weekday == (weekday - 1) % 7), None)
-    if previous and not previous.closed and previous.start_time and previous.end_time:
-        start = _parse_time(previous.start_time)
-        end = _parse_time(previous.end_time)
-        if start and end and start > end and current < end:
-            return True
-        if previous.start_time_2 and previous.end_time_2:
-            start2 = _parse_time(previous.start_time_2)
-            end2 = _parse_time(previous.end_time_2)
-            if start2 and end2 and start2 > end2 and current < end2:
-                return True
     return False
 
 

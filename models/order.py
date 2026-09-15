@@ -11,6 +11,8 @@ class Order(db.Model):
     notes = db.Column(db.Text, default="")
     total = db.Column(db.Numeric(12,2), nullable=False)
     status = db.Column(db.String(30), default="Nuevo", nullable=False, index=True)
+    stock_deducted = db.Column(db.Boolean, default=False, nullable=False, index=True)
+    checkout_token = db.Column(db.String(80), unique=True, nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
     restaurant = db.relationship("Restaurant", back_populates="orders")
     items = db.relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")

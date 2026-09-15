@@ -57,7 +57,7 @@
         </label>
       </div>
 
-      <button class="btn checkout-btn" type="submit">
+      <button class="btn checkout-btn" id="checkout-submit" type="submit">
         Finalizar pedido por WhatsApp <span>→</span>
       </button>
     </form>
@@ -102,5 +102,6 @@ function changeCheckoutMethod(method) {
   document.body.appendChild(form);
   form.submit();
 }
+document.querySelector("#checkout-form")?.addEventListener("submit", function(){const b=document.getElementById("checkout-submit");if(b){b.disabled=true;b.innerText="Procesando pedido…";}});
 </script>
 {% endblock %}

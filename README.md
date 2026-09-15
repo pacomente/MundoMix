@@ -638,3 +638,20 @@ Debe devolver `{"status":"ok"}`.
 ### Imágenes
 
 El proyecto existente actualmente almacena imágenes mediante referencias a archivos bajo `UPLOAD_FOLDER`; este módulo reutiliza ese mecanismo y Pillow para validar imágenes. No se inventó una migración BYTEA sobre el esquema existente porque el modelo real inspeccionado no contiene columnas binarias `BYTEA`. Si se decide migrar también las imágenes históricas a PostgreSQL, debe hacerse como una migración separada y con backup/validación de los archivos existentes.
+
+## Auditoría y correcciones — septiembre 2026
+
+La revisión de la implementación multi-comercio corrigió problemas de estabilidad y seguridad directamente relacionados con locales gastronómicos:
+
+- El aislamiento del comercio autenticado se reconstruye desde `RestaurantUser.restaurant_id`; no se confía en un `restaurant_id` arbitrario de sesión.
+- Las categorías asignadas a productos se validan contra el `restaurant_id` autenticado.
+- Se corrigió el cálculo de horarios nocturnos para que un turno del día anterior pueda mantener abierto el local después de medianoche incluso si el día siguiente está cerrado o no tiene configuración.
+- El contador de pedidos de "hoy" del panel ahora usa el día calendario de Argentina y sus límites UTC equivalentes.
+- Se agregó idempotencia persistente mediante `Order.checkout_token` para rechazar doble envío concurrente del checkout y reutilizar el pedido ya creado cuando corresponde.
+- Se agregó `Order.stock_deducted` para impedir descontar stock dos veces al volver a confirmar un pedido. Los pedidos que ya estaban en estado `Confirmado` se marcan como descontados durante la migración.
+- El panel de comercio permite eliminar logo, banner e imagen de producto sin eliminar el recurso comercial.
+- Se corrigieron los flujos de error del checkout para hacer `rollback`, registrar la excepción en servidor y evitar encadenar un segundo error al intentar reconstruir el carrito.
+- Se validaron redirecciones `next` de los logins para aceptar únicamente rutas locales.
+- El administrador puede distinguir el local en el listado general de pedidos.
+
+Las pruebas realizadas en este entorno fueron estáticas/puras. No se afirma una prueba de Render o PostgreSQL real porque este entorno no dispone de las credenciales ni de conectividad hacia la instancia de producción.

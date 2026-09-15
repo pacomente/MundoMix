@@ -6,13 +6,15 @@ from io import BytesIO
 from PIL import Image
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
 from extensions import db
 from models.order import Order, OrderItem
 from models.restaurant import Restaurant, RestaurantCategory, RestaurantProduct, RestaurantHour
 from routes.restaurant_auth import restaurant_required
-from routes.restaurant_common import restaurant_is_open
+from routes.restaurant_common import ARG_TZ, restaurant_is_open
+from datetime import datetime, timedelta, timezone
 from slugify import make_slug
 
 restaurant_panel_bp = Blueprint("restaurant_panel", __name__)
@@ -21,7 +23,10 @@ STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En cami
 
 
 def current_restaurant():
-    return Restaurant.query.get_or_404(session["restaurant_id"])
+    restaurant_id = session.get("restaurant_id")
+    if not restaurant_id:
+        return None
+    return db.session.get(Restaurant, restaurant_id)
 
 
 def money(value):
@@ -54,6 +59,23 @@ def image_save(file, folder):
     target.mkdir(parents=True, exist_ok=True)
     file.save(target / filename)
     return f"restaurants/{folder}/{filename}"
+
+
+def remove_saved_image(relative_path):
+    if not relative_path:
+        return
+    root = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
+    target = (root / relative_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        current_app.logger.warning("Rejected image deletion outside upload folder: %s", relative_path)
+        return
+    try:
+        if target.is_file():
+            target.unlink()
+    except OSError:
+        current_app.logger.exception("Could not delete image: %s", relative_path)
 
 
 def unique_category_slug(restaurant_id, name, current_id=None):
@@ -89,9 +111,21 @@ def unique_sku(restaurant_id, sku, current_id=None):
 @restaurant_required
 def dashboard():
     restaurant = current_restaurant()
-    sales = db.session.query(func.coalesce(func.sum(Order.total), 0)).filter(Order.restaurant_id == restaurant.id, Order.status != "Cancelado").scalar() or 0
+    if restaurant is None:
+        session.pop("restaurant_user_id", None)
+        session.pop("restaurant_id", None)
+        return redirect(url_for("restaurant_auth.login"))
+    now_local = datetime.now(ARG_TZ)
+    local_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    local_end = local_start + timedelta(days=1)
+    start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
+    end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
+    sales = db.session.query(func.coalesce(func.sum(Order.total), 0)).filter(
+        Order.restaurant_id == restaurant.id, Order.status != "Cancelado"
+    ).scalar() or 0
+    today_query = Order.query.filter(Order.restaurant_id == restaurant.id, Order.created_at >= start, Order.created_at < end)
     return render_template("restaurant/panel/dashboard.html", restaurant=restaurant,
-        today_orders=Order.query.filter_by(restaurant_id=restaurant.id).count(),
+        today_orders=today_query.count(),
         pending_orders=Order.query.filter(Order.restaurant_id == restaurant.id, Order.status.in_(["Nuevo", "Contactado"])).count(),
         sales=Decimal(str(sales)), products=RestaurantProduct.query.filter_by(restaurant_id=restaurant.id).count(),
         recent_orders=Order.query.filter_by(restaurant_id=restaurant.id).order_by(desc(Order.created_at)).limit(8).all(),
@@ -117,7 +151,7 @@ def order_detail(id):
         status = request.form.get("status")
         if status not in STATUSES:
             flash("Estado inválido.", "error")
-        elif status == "Confirmado" and order.status != "Confirmado":
+        elif status == "Confirmado" and not order.stock_deducted:
             order = db.session.execute(select(Order).where(Order.id == id, Order.restaurant_id == restaurant.id).with_for_update()).scalar_one_or_none()
             if order is None:
                 return redirect(url_for("restaurant_panel.orders"))
@@ -134,9 +168,15 @@ def order_detail(id):
                         return render_template("restaurant/panel/order_detail.html", restaurant=restaurant, order=order, statuses=STATUSES)
                     product.stock -= oi.quantity
             order.status = status
+            order.stock_deducted = True
             db.session.commit(); flash("Pedido confirmado y stock descontado.", "success")
         else:
-            order.status = status; db.session.commit(); flash("Pedido actualizado.", "success")
+            if status == "Confirmado" and order.stock_deducted:
+                flash("Este pedido ya tenía el stock descontado; no se vuelve a descontar.", "success")
+            order.status = status
+            db.session.commit()
+            if status != "Confirmado" or not order.stock_deducted:
+                flash("Pedido actualizado.", "success")
         order = Order.query.filter_by(id=id, restaurant_id=restaurant.id).first_or_404()
     return render_template("restaurant/panel/order_detail.html", restaurant=restaurant, order=order, statuses=STATUSES)
 
@@ -160,6 +200,7 @@ def settings():
             restaurant.meta_description = request.form.get("meta_description", "").strip()
             logo = image_save(request.files.get("logo"), "logos")
             banner = image_save(request.files.get("banner"), "banners")
+            old_logo, old_banner = restaurant.logo, restaurant.banner
             if logo: restaurant.logo = logo
             if banner: restaurant.banner = banner
             for day in range(7):
@@ -171,9 +212,16 @@ def settings():
                 hour.end_time = request.form.get(f"end_{day}", "00:00")
                 hour.start_time_2 = request.form.get(f"start2_{day}", "")
                 hour.end_time_2 = request.form.get(f"end2_{day}", "")
-            db.session.commit(); flash("Configuración guardada.", "success")
-        except Exception as exc:
+            db.session.commit()
+            if logo and old_logo != logo: remove_saved_image(old_logo)
+            if banner and old_banner != banner: remove_saved_image(old_banner)
+            flash("Configuración guardada.", "success")
+        except ValueError as exc:
             db.session.rollback(); flash(str(exc), "error")
+        except SQLAlchemyError:
+            db.session.rollback(); current_app.logger.exception("Restaurant settings database error"); flash("No pudimos guardar la configuración. Intentá nuevamente.", "error")
+        except Exception:
+            db.session.rollback(); current_app.logger.exception("Unexpected restaurant settings error"); flash("No pudimos guardar la configuración. Intentá nuevamente.", "error")
     return render_template("restaurant/panel/settings.html", restaurant=restaurant)
 
 
@@ -183,10 +231,19 @@ def categories():
     restaurant = current_restaurant()
     if request.method == "POST":
         name = request.form.get("name", "").strip()
-        if not name: flash("El nombre es obligatorio.", "error")
+        if not name:
+            flash("El nombre es obligatorio.", "error")
         else:
-            db.session.add(RestaurantCategory(restaurant_id=restaurant.id, name=name, slug=unique_category_slug(restaurant.id, name), description=request.form.get("description", "").strip()))
-            db.session.commit(); flash("Categoría creada.", "success")
+            try:
+                duplicate = RestaurantCategory.query.filter_by(restaurant_id=restaurant.id, name=name).first()
+                if duplicate:
+                    raise ValueError("Ya existe una categoría con ese nombre.")
+                db.session.add(RestaurantCategory(restaurant_id=restaurant.id, name=name, slug=unique_category_slug(restaurant.id, name), description=request.form.get("description", "").strip()))
+                db.session.commit(); flash("Categoría creada.", "success")
+            except ValueError as exc:
+                db.session.rollback(); flash(str(exc), "error")
+            except SQLAlchemyError:
+                db.session.rollback(); current_app.logger.exception("Restaurant category database error"); flash("No pudimos crear la categoría.", "error")
     return render_template("restaurant/panel/categories.html", restaurant=restaurant, categories=RestaurantCategory.query.filter_by(restaurant_id=restaurant.id).order_by(RestaurantCategory.display_order, RestaurantCategory.name).all())
 
 
@@ -235,12 +292,30 @@ def product_form(id=None):
             else:
                 item.sku = unique_sku(restaurant.id, request.form.get("sku", "").strip(), item.id)
             item.name = name; item.slug = unique_product_slug(restaurant.id, name, item.id)
-            item.description = request.form.get("description", "").strip(); item.price_delivery = money(request.form.get("price_delivery", "0")); item.price_pickup = money(request.form.get("price_pickup", "0")); item.stock = max(0, request.form.get("stock", 0, type=int)); item.category_id = request.form.get("category_id", type=int) or None; item.featured = "featured" in request.form; item.active = "active" in request.form
+            item.description = request.form.get("description", "").strip()
+            item.price_delivery = money(request.form.get("price_delivery", "0"))
+            item.price_pickup = money(request.form.get("price_pickup", "0"))
+            item.stock = max(0, request.form.get("stock", 0, type=int))
+            category_id = request.form.get("category_id", type=int) or None
+            if category_id is not None and not RestaurantCategory.query.filter_by(id=category_id, restaurant_id=restaurant.id).first():
+                raise ValueError("La categoría seleccionada no pertenece a este local.")
+            item.category_id = category_id
+            item.featured = "featured" in request.form
+            item.active = "active" in request.form
             image = image_save(request.files.get("image"), "products")
+            old_image = item.image
             if image: item.image = image
-            db.session.commit(); flash("Producto guardado.", "success"); return redirect(url_for("restaurant_panel.products"))
-        except Exception as exc:
+            db.session.commit()
+            if image and old_image != image: remove_saved_image(old_image)
+            flash("Producto guardado.", "success"); return redirect(url_for("restaurant_panel.products"))
+        except ValueError as exc:
             db.session.rollback(); flash(str(exc), "error")
+        except IntegrityError:
+            db.session.rollback(); current_app.logger.exception("Restaurant product integrity error"); flash("No pudimos guardar el producto. Revisá los datos e intentá nuevamente.", "error")
+        except SQLAlchemyError:
+            db.session.rollback(); current_app.logger.exception("Restaurant product database error"); flash("No pudimos guardar el producto. Intentá nuevamente.", "error")
+        except Exception:
+            db.session.rollback(); current_app.logger.exception("Unexpected restaurant product error"); flash("No pudimos guardar el producto. Intentá nuevamente.", "error")
     return render_template("restaurant/panel/product_form.html", restaurant=restaurant, product=item, categories=categories)
 
 
@@ -248,6 +323,43 @@ def product_form(id=None):
 @restaurant_required
 def product_toggle(id):
     restaurant = current_restaurant(); item = RestaurantProduct.query.filter_by(id=id, restaurant_id=restaurant.id).first_or_404(); item.active = not item.active; db.session.commit(); return redirect(url_for("restaurant_panel.products"))
+
+
+@restaurant_panel_bp.post("/comercio/panel/configuracion/logo/eliminar")
+@restaurant_required
+def logo_delete():
+    restaurant = current_restaurant()
+    old = restaurant.logo
+    restaurant.logo = None
+    db.session.commit()
+    remove_saved_image(old)
+    flash("Logo eliminado.", "success")
+    return redirect(url_for("restaurant_panel.settings"))
+
+
+@restaurant_panel_bp.post("/comercio/panel/configuracion/banner/eliminar")
+@restaurant_required
+def banner_delete():
+    restaurant = current_restaurant()
+    old = restaurant.banner
+    restaurant.banner = None
+    db.session.commit()
+    remove_saved_image(old)
+    flash("Banner eliminado.", "success")
+    return redirect(url_for("restaurant_panel.settings"))
+
+
+@restaurant_panel_bp.post("/comercio/panel/productos/<int:id>/imagen/eliminar")
+@restaurant_required
+def product_image_delete(id):
+    restaurant = current_restaurant()
+    item = RestaurantProduct.query.filter_by(id=id, restaurant_id=restaurant.id).first_or_404()
+    old = item.image
+    item.image = None
+    db.session.commit()
+    remove_saved_image(old)
+    flash("Imagen eliminada.", "success")
+    return redirect(url_for("restaurant_panel.product_form", id=id))
 
 
 @restaurant_panel_bp.post("/comercio/panel/productos/<int:id>/eliminar")
