@@ -16,7 +16,6 @@ from routes.restaurant_cart import restaurant_cart_bp
 from routes.restaurant_checkout import restaurant_checkout_bp
 from routes.restaurant_auth import restaurant_auth_bp
 from routes.restaurant_panel import restaurant_panel_bp
-from routes.restaurant_menu import restaurant_menu_bp
 
 
 def create_app():
@@ -60,7 +59,6 @@ def create_app():
     app.register_blueprint(restaurant_checkout_bp)
     app.register_blueprint(restaurant_auth_bp)
     app.register_blueprint(restaurant_panel_bp)
-    app.register_blueprint(restaurant_menu_bp)
 
     @app.get("/health")
     def health():
@@ -84,20 +82,6 @@ def create_app():
     def uploaded_file(filename):
         return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
-    @app.template_filter("arg_dt")
-    def arg_dt_filter(value):
-        from routes.restaurant_common import ARG_TZ
-        if not value: return ""
-        return value.replace(tzinfo=__import__("datetime").timezone.utc).astimezone(ARG_TZ).strftime("%d/%m/%Y %H:%M")
-
-    @app.template_filter("fromjson")
-    def fromjson_filter(value):
-        import json
-        try:
-            return json.loads(value or "[]")
-        except (TypeError, ValueError):
-            return []
-
     @app.context_processor
     def inject_globals():
         from models.settings import Setting
@@ -106,16 +90,16 @@ def create_app():
         cart = session.get("cart", {})
         cart_count = sum(int(v) for v in cart.values()) if cart else 0
         restaurant_cart = session.get("restaurant_cart", {})
+        # The restaurant cart is intentionally single-merchant. Count only
+        # the active cart entries rather than summing stale merchant buckets.
         restaurant_cart_count = 0
-        if restaurant_cart:
-            for local in restaurant_cart.values():
-                for line in local.values():
-                    if isinstance(line, dict):
-                        try: restaurant_cart_count += max(0, int(line.get("quantity", 0)))
-                        except (TypeError, ValueError): pass
-                    else:
-                        try: restaurant_cart_count += max(0, int(line))
-                        except (TypeError, ValueError): pass
+        if len(restaurant_cart) == 1:
+            local = next(iter(restaurant_cart.values())) or {}
+            for raw_qty in local.values():
+                try:
+                    restaurant_cart_count += max(0, int(raw_qty))
+                except (TypeError, ValueError):
+                    continue
         return {"site_settings": settings, "cart_count": cart_count, "restaurant_cart_count": restaurant_cart_count}
 
     @app.errorhandler(403)
