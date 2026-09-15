@@ -31,6 +31,7 @@ class Restaurant(db.Model):
     prep_min = db.Column(db.Integer, default=20, nullable=False)
     prep_max = db.Column(db.Integer, default=30, nullable=False)
     theme_color = db.Column(db.String(20), default="#e21b23")
+    print_settings = db.Column(db.JSON, default=dict, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     users = db.relationship("RestaurantUser", back_populates="restaurant", cascade="all, delete-orphan")

@@ -15,6 +15,7 @@ from models.restaurant import Restaurant, RestaurantCategory, RestaurantProduct,
 from routes.restaurant_auth import restaurant_required
 from routes.restaurant_common import ARG_TZ, restaurant_is_open
 from datetime import datetime, timedelta, timezone
+import json
 from slugify import make_slug
 
 restaurant_panel_bp = Blueprint("restaurant_panel", __name__)
@@ -129,15 +130,53 @@ def dashboard():
     return render_template("restaurant/panel/dashboard.html",restaurant=restaurant,today_orders=valid_today.count(),pending_orders=pending,sales=sales,products=active_products,soldout_products=soldout,recent_orders=Order.query.filter_by(restaurant_id=restaurant.id).order_by(desc(Order.created_at)).limit(8).all(),is_open=restaurant_is_open(restaurant),status_counts=status_counts,top_products=top,ticket_avg=(sales/valid_today.count() if valid_today.count() else Decimal("0")))
 
 
+@restaurant_panel_bp.get("/comercio/panel/pedidos/nuevos/count")
+@restaurant_required
+def new_orders_count():
+    restaurant = current_restaurant()
+    count = Order.query.filter_by(restaurant_id=restaurant.id, status="Nuevo").count()
+    return {"count": count}
+
 @restaurant_panel_bp.get("/comercio/panel/pedidos")
 @restaurant_required
 def orders():
     restaurant = current_restaurant()
     status = request.args.get("status", "")
+    period = request.args.get("period", "today")
     query = Order.query.filter_by(restaurant_id=restaurant.id)
     if status in STATUSES: query = query.filter_by(status=status)
-    return render_template("restaurant/panel/orders.html", restaurant=restaurant, orders=query.order_by(desc(Order.created_at)).all(), statuses=STATUSES, selected_status=status)
+    now = datetime.now(ARG_TZ)
+    if period == "yesterday":
+        start_local = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "7":
+        start_local = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = now + timedelta(days=1)
+        end_local = end_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "30":
+        start_local = (now - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = now + timedelta(days=1)
+        end_local = end_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start_local = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_local = start_local + timedelta(days=1)
+    start = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    end = end_local.astimezone(timezone.utc).replace(tzinfo=None)
+    query = query.filter(Order.created_at >= start, Order.created_at < end)
+    status_counts = {st: Order.query.filter_by(restaurant_id=restaurant.id, status=st).count() for st in STATUSES}
+    return render_template("restaurant/panel/orders.html", restaurant=restaurant, orders=query.order_by(desc(Order.created_at)).all(), statuses=STATUSES, selected_status=status, status_counts=status_counts, period=period)
 
+
+@restaurant_panel_bp.get("/comercio/panel/pedidos/<int:id>/imprimir")
+@restaurant_required
+def print_order(id):
+    restaurant = current_restaurant()
+    order = Order.query.filter_by(id=id, restaurant_id=restaurant.id).first_or_404()
+    order.printed_at = datetime.utcnow()
+    db.session.commit()
+    settings = dict(restaurant.print_settings or {})
+    width = settings.get("width", "80") if settings.get("width") in ("58", "80", "a4") else "80"
+    return render_template("restaurant/panel/order_print.html", restaurant=restaurant, order=order, print_settings=settings, print_width=width)
 
 @restaurant_panel_bp.route("/comercio/panel/pedidos/<int:id>", methods=["GET", "POST"])
 @restaurant_required
@@ -212,6 +251,15 @@ def settings():
             restaurant.prep_min=max(0,request.form.get("prep_min",20,type=int)); restaurant.prep_max=max(restaurant.prep_min,request.form.get("prep_max",30,type=int)); restaurant.theme_color=request.form.get("theme_color","#e21b23").strip() or "#e21b23"
             restaurant.delivery_zones=[{"name":n.strip(),"fee":float(money(f).quantize(Decimal("0.01")))} for n,f in zip(request.form.getlist("zone_name"),request.form.getlist("zone_fee")) if n.strip()]
             restaurant.meta_title=request.form.get("meta_title","").strip(); restaurant.meta_description=request.form.get("meta_description","").strip()
+            width=request.form.get("print_width","80")
+            if width not in ("58","80","a4"): width="80"
+            restaurant.print_settings={
+                "width": width,
+                "show_mundomix_logo": "show_mundomix_logo" in request.form,
+                "show_restaurant_logo": "show_restaurant_logo" in request.form,
+                "show_address": "show_address" in request.form,
+                "show_phone": "show_phone" in request.form,
+            }
             logo=image_save(request.files.get("logo"),"logos"); banner=image_save(request.files.get("banner"),"banners"); old_logo,old_banner=restaurant.logo,restaurant.banner
             if logo:restaurant.logo=logo
             if banner:restaurant.banner=banner

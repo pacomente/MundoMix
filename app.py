@@ -106,7 +106,16 @@ def create_app():
         cart = session.get("cart", {})
         cart_count = sum(int(v) for v in cart.values()) if cart else 0
         restaurant_cart = session.get("restaurant_cart", {})
-        restaurant_cart_count = sum(int(q) for local in restaurant_cart.values() for q in local.values()) if restaurant_cart else 0
+        restaurant_cart_count = 0
+        if restaurant_cart:
+            for local in restaurant_cart.values():
+                for line in local.values():
+                    if isinstance(line, dict):
+                        try: restaurant_cart_count += max(0, int(line.get("quantity", 0)))
+                        except (TypeError, ValueError): pass
+                    else:
+                        try: restaurant_cart_count += max(0, int(line))
+                        except (TypeError, ValueError): pass
         return {"site_settings": settings, "cart_count": cart_count, "restaurant_cart_count": restaurant_cart_count}
 
     @app.errorhandler(403)

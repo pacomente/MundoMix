@@ -106,6 +106,7 @@ def _save_line(restaurant, product, qty, modifiers, note):
 @restaurant_cart_bp.post("/<slug>/carrito/agregar/<int:product_id>")
 def add(slug, product_id):
     restaurant=Restaurant.query.filter_by(slug=slug,active=True).first_or_404(); product=RestaurantProduct.query.filter_by(id=product_id,restaurant_id=restaurant.id).first_or_404()
+    if not restaurant.accept_orders: flash(restaurant.pause_message or "Este local no está tomando pedidos.","error"); return redirect(request.form.get("next") or url_for("restaurants.detail",slug=slug))
     if not product.available: flash("Este producto está agotado o no disponible.","error"); return redirect(request.form.get("next") or url_for("restaurants.detail",slug=slug))
     if any(k!=str(restaurant.id) for k in _cart()): return redirect(url_for("restaurants.detail",slug=slug,cart_conflict=1,conflict_product=product.id))
     try:
@@ -126,7 +127,15 @@ def replace_cart(slug,product_id):
 @restaurant_cart_bp.get("/<slug>/carrito")
 def view(slug):
     restaurant=Restaurant.query.filter_by(slug=slug,active=True).first_or_404(); method=session.get("restaurant_fulfillment_method","delivery")
-    items,subtotal,discount=get_restaurant_cart(restaurant.id,method); delivery_fee=Decimal(str(restaurant.delivery_fee or 0)) if method=="delivery" else Decimal("0")
+    items,subtotal,discount=get_restaurant_cart(restaurant.id,method)
+    zone=session.get("restaurant_delivery_zone", "") if method=="delivery" else ""
+    delivery_fee=Decimal(str(restaurant.delivery_fee or 0)) if method=="delivery" else Decimal("0")
+    if method=="delivery" and zone:
+        for z in (restaurant.delivery_zones or []):
+            if str(z.get("name","")).strip()==zone:
+                try: delivery_fee=Decimal(str(z.get("fee",0)))
+                except (TypeError,ValueError): pass
+                break
     total=max(Decimal("0"),subtotal-discount)+delivery_fee
     return render_template("restaurant/cart.html",restaurant=restaurant,items=items,subtotal=subtotal,discount=discount,delivery_fee=delivery_fee,total=total,method=method)
 
@@ -147,7 +156,8 @@ def update(slug):
         product_id=line.get("product_id") if isinstance(line,dict) else int(line_id); product=RestaurantProduct.query.filter_by(id=product_id,restaurant_id=restaurant.id).first()
         if not product or not product.available: cart.pop(line_id,None); continue
         if product.stock_control and qty>product.stock: qty=product.stock; flash(f"{product.name}: ajustamos la cantidad al stock disponible.","error")
-        cart[line_id]["quantity"]=qty
+        if isinstance(cart[line_id], dict): cart[line_id]["quantity"]=qty
+        else: cart[line_id]=qty
     session.modified=True; return redirect(url_for("restaurant_cart.view",slug=slug))
 
 @restaurant_cart_bp.post("/<slug>/carrito/eliminar/<path:line_id>")
