@@ -1,9 +1,9 @@
-"""fix real heads"""
+"""merge final heads"""
 from alembic import op
 import sqlalchemy as sa
 
-revision = '9e3b096e1569'
-down_revision = '20260918_04_cloudinary'
+revision = '999999999999'
+down_revision = ('20260918_05_schema_indexes', 'OTRO_CODIGO')
 branch_labels = None
 depends_on = None
 
