@@ -18,7 +18,7 @@ from app import create_app
 from extensions import db
 from models import Product, Category, Banner
 from models.restaurant import Restaurant, RestaurantProduct
-from services.cloudinary_service import upload_image, cloudinary, generate_url
+from services.cloudinary_service import upload_image, cloudinary, generate_url, cloudinary_public_id_from_url
 
 
 def is_cloudinary_url(value):
@@ -67,7 +67,7 @@ def migrate_ref(legacy, folder, public_id):
     if not legacy:
         return None
     if is_cloudinary_url(legacy):
-        return {"secure_url": legacy, "public_id": None}
+        return {"secure_url": legacy, "public_id": cloudinary_public_id_from_url(legacy)}
     if str(legacy).startswith(("http://", "https://")):
         return migrate_url(legacy, folder, public_id)
     return migrate_local(legacy, folder, public_id)
@@ -78,6 +78,12 @@ def migrate_model(obj, legacy_attr, url_attr, id_attr, folder, public_id):
     current_id = getattr(obj, id_attr)
     if current_url and current_id:
         return "already"
+    if current_url and is_cloudinary_url(current_url):
+        derived = cloudinary_public_id_from_url(current_url)
+        if derived:
+            setattr(obj, id_attr, derived)
+            db.session.commit()
+            return "already"
     legacy = getattr(obj, legacy_attr)
     if not legacy:
         return "empty"

@@ -196,7 +196,7 @@ def product_form(id=None):
 @admin_required
 def product_delete(id):
     item = Product.query.get_or_404(id)
-    ids = [item.cloudinary_public_id] + item.additional_image_public_ids.split(",")
+    ids = [item.cloudinary_public_id] + (item.additional_image_public_ids or "").split(",")
     ids = [x for x in ids if x]
     for public_id in ids:
         delete_image_ref(public_id)
@@ -339,9 +339,19 @@ def category_toggle(id):
 @admin_required
 def category_delete(id):
     item = Category.query.get_or_404(id)
+    old_id = item.cloudinary_public_id
+    if old_id:
+        delete_image_ref(old_id)
     for product in item.products:
         product.category_id = None
-    db.session.delete(item); db.session.commit()
+    db.session.delete(item)
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        # The Cloudinary resource was already removed. Keep the failed DB row
+        # transaction rolled back rather than silently pretending deletion succeeded.
+        raise
     flash("Categoría eliminada; los productos quedaron sin categoría.", "success")
     return redirect(url_for("admin.categories"))
 

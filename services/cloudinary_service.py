@@ -6,6 +6,7 @@ kept only as migration/fallback references until explicitly retired.
 import io
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from PIL import Image
@@ -20,6 +21,37 @@ except ImportError:  # Allows static tooling to import the module before install
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+def cloudinary_public_id_from_url(value):
+    """Extract a public_id from a standard Cloudinary delivery URL when possible."""
+    if not value or "res.cloudinary.com" not in str(value):
+        return None
+    path = urlparse(str(value)).path.lstrip("/")
+    parts = path.split("/")
+    try:
+        upload_index = parts.index("upload")
+    except ValueError:
+        return None
+    resource = parts[upload_index + 1:]
+    if not resource:
+        return None
+    # Strip transformation components (v123/... or c_.../q_auto/... style).
+    while resource and (resource[0].startswith("v") and resource[0][1:].isdigit()):
+        resource = resource[1:]
+    while resource and ("_" in resource[0] or resource[0].startswith("q") or resource[0].startswith("f")) and "/" in "/".join(resource):
+        if resource[0].startswith("v") and resource[0][1:].isdigit():
+            resource = resource[1:]
+        elif any(resource[0].startswith(prefix) for prefix in ("c_", "q_", "f_", "w_", "h_", "ar_", "g_", "dpr_", "e_", "fl_")):
+            resource = resource[1:]
+        else:
+            break
+    if not resource:
+        return None
+    last = resource[-1]
+    if "." in last:
+        resource[-1] = last.rsplit(".", 1)[0]
+    return "/".join(resource) or None
 
 
 def configure():

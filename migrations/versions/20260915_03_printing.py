@@ -15,9 +15,11 @@ def upgrade():
     if "printed_at" not in _cols("order"):
         op.add_column("order", sa.Column("printed_at", sa.DateTime(), nullable=True))
     if "print_settings" not in _cols("restaurant"):
-        op.add_column("restaurant", sa.Column("print_settings", sa.JSON(), nullable=True))
+        with op.batch_alter_table("restaurant") as batch:
+            batch.add_column(sa.Column("print_settings", sa.JSON(), nullable=True))
     op.execute("UPDATE restaurant SET print_settings = '{}' WHERE print_settings IS NULL")
-    op.alter_column("restaurant", "print_settings", nullable=False)
+    with op.batch_alter_table("restaurant") as batch:
+        batch.alter_column("print_settings", existing_type=sa.JSON(), nullable=False)
 
 def downgrade():
     # Non-destructive by policy: production data is never removed by downgrade.

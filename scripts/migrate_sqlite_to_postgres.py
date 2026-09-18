@@ -139,7 +139,18 @@ def main() -> int:
         max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
         pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
     )
-    db.metadata.create_all(target_engine)
+    # The PostgreSQL schema must already have been created by Flask-Migrate.
+    # This data-transfer script never acts as a schema migration.
+    with target_engine.connect() as conn:
+        missing_tables = [
+            table for table in TABLE_ORDER
+            if not conn.dialect.has_table(conn, table)
+        ]
+    if missing_tables:
+        raise RuntimeError(
+            "Faltan tablas en PostgreSQL. Ejecutá primero `flask db upgrade`: "
+            + ", ".join(missing_tables)
+        )
 
     model_tables = {
         "category": Category.__table__,
