@@ -15,16 +15,6 @@ from slugify import make_slug
 
 admin_bp = Blueprint("admin", __name__)
 STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En camino", "Entregado", "Cancelado"]
-ALLOWED_TRANSITIONS = {
-    "Nuevo": {"Contactado", "Confirmado", "Cancelado"},
-    "Contactado": {"Confirmado", "Cancelado"},
-    "Confirmado": {"Preparando", "Cancelado"},
-    "Preparando": {"Listo", "Cancelado"},
-    "Listo": {"En camino", "Entregado", "Cancelado"},
-    "En camino": {"Entregado", "Cancelado"},
-    "Entregado": set(),
-    "Cancelado": set(),
-}
 ALLOWED = {"jpg", "jpeg", "png", "webp"}
 
 
@@ -373,8 +363,6 @@ def order_detail(id):
         new_status = request.form.get("status")
         if new_status not in STATUSES:
             flash("Estado inválido.", "error")
-        elif new_status != order.status and new_status not in ALLOWED_TRANSITIONS.get(order.status, set()):
-            flash(f"No se puede pasar de {order.status} a {new_status}.", "error")
         elif new_status == "Confirmado" and not order.stock_deducted:
             product_ids = sorted({oi.product_id for oi in order.items if oi.product_id})
             locked_products = {}
@@ -433,8 +421,6 @@ def restaurants():
             password = request.form.get("password", "")
             if not name or not username or not password:
                 raise ValueError("Nombre, usuario y contraseña son obligatorios.")
-            if len(password) < 8:
-                raise ValueError("La contraseña debe tener al menos 8 caracteres.")
             if RestaurantUser.query.filter_by(username=username).first():
                 raise ValueError("Ese usuario ya existe.")
             restaurant = Restaurant(name=name, slug=unique_restaurant_slug(name), description=request.form.get("description", "").strip(), food_type=request.form.get("food_type", "Comida rápida").strip(), address=request.form.get("address", "").strip(), phone=request.form.get("phone", "").strip(), whatsapp=request.form.get("whatsapp", "").strip(), active=True)
@@ -471,8 +457,6 @@ def restaurant_edit(id):
                 if other: raise ValueError("Ese usuario ya existe.")
                 if user: user.username = new_username
             if new_password:
-                if len(new_password) < 8:
-                    raise ValueError("La nueva contraseña debe tener al menos 8 caracteres.")
                 if not user:
                     user = RestaurantUser(restaurant_id=restaurant.id, username=new_username or f"local_{restaurant.id}", password_hash=generate_password_hash(new_password)); db.session.add(user)
                 else: user.password_hash = generate_password_hash(new_password)
@@ -497,8 +481,8 @@ def restaurant_toggle(id):
 @admin_bp.get("/locales/<int:id>/panel")
 @admin_required
 def restaurant_panel_link(id):
-    Restaurant.query.get_or_404(id)
-    return redirect(url_for("restaurant_auth.login", next="/comercio/panel"))
+    restaurant = Restaurant.query.get_or_404(id)
+    return redirect(url_for("restaurants.detail", slug=restaurant.slug))
 
 @admin_bp.route("/configuracion", methods=["GET", "POST"])
 @admin_bp.route("/settings", methods=["GET", "POST"])

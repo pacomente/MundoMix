@@ -4,4 +4,5 @@ from .order import Order, OrderItem
 from .banner import Banner
 from .admin import Admin
 from .settings import Setting
-from .restaurant import Restaurant, RestaurantUser, RestaurantCategory, RestaurantProduct, RestaurantHour
+from .restaurant import (Restaurant, RestaurantUser, RestaurantCategory, RestaurantProduct, RestaurantHour,
+    ModifierGroup, ModifierOption, ProductModifierGroup, ComboComponent, RestaurantPromotion)
