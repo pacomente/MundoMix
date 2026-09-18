@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from functools import wraps
+from uuid import uuid4
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -15,6 +16,7 @@ from slugify import make_slug
 from services.cloudinary_service import upload_image, delete_image
 
 restaurant_panel_bp = Blueprint("restaurant_panel", __name__)
+ALLOWED = {"jpg", "jpeg", "png", "webp"}
 STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En camino", "Entregado", "Cancelado"]
 
 
@@ -35,10 +37,33 @@ def money(value):
     return amount
 
 
-def image_save(file, folder):
-    """Centralized Cloudinary upload for all restaurant images."""
-    return upload_image(file, f"restaurants/{folder}") if file and file.filename else None
+def image_save(file, folder, public_id=None):
+    if not file or not file.filename:
+        return None
+    return upload_image(file, folder, public_id=public_id)
 
+
+def remove_saved_image(relative_path):
+    """Legacy filesystem cleanup only; new images are never stored here."""
+    if not relative_path:
+        return
+    from pathlib import Path
+    root = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
+    target = (root / relative_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        current_app.logger.warning("Rejected legacy image deletion outside upload folder: %s", relative_path)
+        return
+    try:
+        if target.is_file(): target.unlink()
+    except OSError:
+        current_app.logger.exception("Could not delete legacy image: %s", relative_path)
+
+
+def remove_cloudinary_image(public_id):
+    if public_id:
+        delete_image(public_id)
 
 def unique_category_slug(restaurant_id, name, current_id=None):
     base, slug, i = make_slug(name), make_slug(name), 2
@@ -221,38 +246,39 @@ def settings():
                 "show_address": "show_address" in request.form,
                 "show_phone": "show_phone" in request.form,
             }
-            old_logo_id, old_banner_id = restaurant.logo_cloudinary_public_id, restaurant.banner_cloudinary_public_id
-            new_assets = []
-            logo=image_save(request.files.get("logo"),"logos")
-            if logo:
-                new_assets.append(logo)
-                restaurant.logo=logo.url
-                restaurant.logo_cloudinary_public_id=logo.public_id
-            banner=image_save(request.files.get("banner"),"banners")
-            if banner:
-                new_assets.append(banner)
-                restaurant.banner=banner.url
-                restaurant.banner_cloudinary_public_id=banner.public_id
+            uploaded=[]
+            logo=image_save(request.files.get("logo"),f"mundomix/restaurants/{restaurant.id}/logo",public_id=f"restaurant-{restaurant.id}-logo-{uuid4().hex[:8]}")
+            if logo: uploaded.append(logo["public_id"])
+            banner=image_save(request.files.get("banner"),f"mundomix/restaurants/{restaurant.id}/banner",public_id=f"restaurant-{restaurant.id}-banner-{uuid4().hex[:8]}")
+            if banner: uploaded.append(banner["public_id"])
+            old_logo,old_banner=restaurant.logo,restaurant.banner
+            old_logo_id,old_banner_id=restaurant.logo_cloudinary_public_id,restaurant.banner_cloudinary_public_id
+            if logo: restaurant.logo_url=logo["secure_url"]; restaurant.logo_cloudinary_public_id=logo["public_id"]
+            if banner: restaurant.banner_url=banner["secure_url"]; restaurant.banner_cloudinary_public_id=banner["public_id"]
             for day in range(7):
                 hour=RestaurantHour.query.filter_by(restaurant_id=restaurant.id,weekday=day).first() or RestaurantHour(restaurant_id=restaurant.id,weekday=day); db.session.add(hour)
                 hour.closed=f"closed_{day}" in request.form; hour.start_time=request.form.get(f"start_{day}","19:00"); hour.end_time=request.form.get(f"end_{day}","00:00"); hour.start_time_2=request.form.get(f"start2_{day}",""); hour.end_time_2=request.form.get(f"end2_{day}","")
             db.session.commit()
-            for old_id, new_asset in ((old_logo_id, logo), (old_banner_id, banner)):
-                if new_asset and old_id and old_id != new_asset.public_id:
-                    try: delete_image(old_id)
-                    except Exception: current_app.logger.exception("Could not delete replaced restaurant Cloudinary image")
+            if logo and old_logo_id:
+                try: remove_cloudinary_image(old_logo_id)
+                except Exception: current_app.logger.exception("Could not delete replaced restaurant logo %s", old_logo_id)
+            if banner and old_banner_id:
+                try: remove_cloudinary_image(old_banner_id)
+                except Exception: current_app.logger.exception("Could not delete replaced restaurant banner %s", old_banner_id)
+            if logo and old_logo: remove_saved_image(old_logo)
+            if banner and old_banner: remove_saved_image(old_banner)
             flash("Configuración guardada.","success")
         except ValueError as exc:
             db.session.rollback()
-            for asset in locals().get("new_assets", []):
-                try: delete_image(asset.public_id)
-                except Exception: current_app.logger.exception("Could not roll back restaurant Cloudinary upload")
+            for public_id in locals().get("uploaded", []):
+                try: remove_cloudinary_image(public_id)
+                except Exception: current_app.logger.exception("Cloudinary cleanup failed for %s", public_id)
             flash(str(exc),"error")
         except SQLAlchemyError:
             db.session.rollback()
-            for asset in locals().get("new_assets", []):
-                try: delete_image(asset.public_id)
-                except Exception: current_app.logger.exception("Could not roll back restaurant Cloudinary upload")
+            for public_id in locals().get("uploaded", []):
+                try: remove_cloudinary_image(public_id)
+                except Exception: current_app.logger.exception("Cloudinary cleanup failed for %s", public_id)
             current_app.logger.exception("Restaurant settings database error"); flash("No pudimos guardar la configuración.","error")
     return render_template("restaurant/panel/settings.html",restaurant=restaurant)
 
@@ -325,13 +351,11 @@ def product_form(id=None):
             category_id=request.form.get("category_id",type=int) or None
             if category_id and not RestaurantCategory.query.filter_by(id=category_id,restaurant_id=restaurant.id).first():raise ValueError("La categoría seleccionada no pertenece a este local.")
             item.category_id=category_id; item.featured="featured" in request.form; item.active="active" in request.form; item.display_order=request.form.get("display_order",0,type=int); item.label=request.form.get("label","").strip()[:40]; item.nutrition=request.form.get("nutrition","").strip(); item.prep_min=request.form.get("prep_min",type=int) or None; item.prep_max=request.form.get("prep_max",type=int) or None; item.is_combo="is_combo" in request.form
-            old_image_id=item.cloudinary_public_id
-            new_assets=[]
-            image=image_save(request.files.get("image"),"products")
-            if image:
-                new_assets.append(image)
-                item.image=image.url
-                item.cloudinary_public_id=image.public_id
+            uploaded=[]
+            image=image_save(request.files.get("image"),f"mundomix/restaurants/{restaurant.id}/products",public_id=f"restaurant-{restaurant.id}-product-{item.id}-{uuid4().hex[:8]}")
+            if image: uploaded.append(image["public_id"])
+            old_image=item.image; old_image_id=item.cloudinary_public_id
+            if image: item.image_url=image["secure_url"]; item.cloudinary_public_id=image["public_id"]
             # Rebuild only this product's modifier associations, all tenant-scoped.
             ProductModifierGroup.query.filter_by(product_id=item.id).delete(synchronize_session=False)
             for gid in request.form.getlist("modifier_group_ids",type=int):
@@ -343,22 +367,22 @@ def product_form(id=None):
                     if pid==item.id:continue
                     c=RestaurantProduct.query.filter_by(id=pid,restaurant_id=restaurant.id).first()
                     if c:db.session.add(ComboComponent(combo_id=item.id,product_id=c.id,quantity=max(1,request.form.get(f"component_qty_{pid}",1,type=int))))
-            db.session.commit()
-            if image and old_image_id and old_image_id != image.public_id:
-                try: delete_image(old_image_id)
-                except Exception: current_app.logger.exception("Could not delete replaced restaurant product image")
+            db.session.commit();
+            if image and old_image_id:
+                try: remove_cloudinary_image(old_image_id)
+                except Exception: current_app.logger.exception("Could not delete replaced restaurant product image %s", old_image_id)
             flash("Producto guardado.","success"); return redirect(url_for("restaurant_panel.products"))
         except ValueError as exc:
             db.session.rollback()
-            for asset in locals().get("new_assets", []):
-                try: delete_image(asset.public_id)
-                except Exception: current_app.logger.exception("Could not roll back restaurant product Cloudinary upload")
+            for public_id in locals().get("uploaded", []):
+                try: remove_cloudinary_image(public_id)
+                except Exception: current_app.logger.exception("Cloudinary cleanup failed for %s", public_id)
             flash(str(exc),"error")
         except (IntegrityError,SQLAlchemyError):
             db.session.rollback()
-            for asset in locals().get("new_assets", []):
-                try: delete_image(asset.public_id)
-                except Exception: current_app.logger.exception("Could not roll back restaurant product Cloudinary upload")
+            for public_id in locals().get("uploaded", []):
+                try: remove_cloudinary_image(public_id)
+                except Exception: current_app.logger.exception("Cloudinary cleanup failed for %s", public_id)
             current_app.logger.exception("Restaurant product database error");flash("No pudimos guardar el producto. Revisá los datos.","error")
     selected_groups={x.group_id for x in item.modifier_links} if item else set(); selected_components={x.product_id:x.quantity for x in item.combo_components} if item else {}
     return render_template("restaurant/panel/product_form.html",restaurant=restaurant,product=item,categories=categories,groups=groups,selected_groups=selected_groups,components=components,selected_components=selected_components)
@@ -374,13 +398,11 @@ def product_toggle(id):
 @restaurant_required
 def logo_delete():
     restaurant = current_restaurant()
-    old_id = restaurant.logo_cloudinary_public_id
-    restaurant.logo = None
-    restaurant.logo_cloudinary_public_id = None
+    old = restaurant.logo; old_id = restaurant.logo_cloudinary_public_id
+    if old_id: remove_cloudinary_image(old_id)
+    restaurant.logo_url = None; restaurant.logo_cloudinary_public_id = None; restaurant.logo = None
     db.session.commit()
-    if old_id:
-        try: delete_image(old_id)
-        except Exception: current_app.logger.exception("Could not delete restaurant Cloudinary logo")
+    remove_saved_image(old)
     flash("Logo eliminado.", "success")
     return redirect(url_for("restaurant_panel.settings"))
 
@@ -389,13 +411,11 @@ def logo_delete():
 @restaurant_required
 def banner_delete():
     restaurant = current_restaurant()
-    old_id = restaurant.banner_cloudinary_public_id
-    restaurant.banner = None
-    restaurant.banner_cloudinary_public_id = None
+    old = restaurant.banner; old_id = restaurant.banner_cloudinary_public_id
+    if old_id: remove_cloudinary_image(old_id)
+    restaurant.banner_url = None; restaurant.banner_cloudinary_public_id = None; restaurant.banner = None
     db.session.commit()
-    if old_id:
-        try: delete_image(old_id)
-        except Exception: current_app.logger.exception("Could not delete restaurant Cloudinary banner")
+    remove_saved_image(old)
     flash("Banner eliminado.", "success")
     return redirect(url_for("restaurant_panel.settings"))
 
@@ -405,13 +425,11 @@ def banner_delete():
 def product_image_delete(id):
     restaurant = current_restaurant()
     item = RestaurantProduct.query.filter_by(id=id, restaurant_id=restaurant.id).first_or_404()
-    old_id = item.cloudinary_public_id
-    item.image = None
-    item.cloudinary_public_id = None
+    old = item.image; old_id = item.cloudinary_public_id
+    if old_id: remove_cloudinary_image(old_id)
+    item.image_url = None; item.cloudinary_public_id = None; item.image = None
     db.session.commit()
-    if old_id:
-        try: delete_image(old_id)
-        except Exception: current_app.logger.exception("Could not delete restaurant product Cloudinary image")
+    remove_saved_image(old)
     flash("Imagen eliminada.", "success")
     return redirect(url_for("restaurant_panel.product_form", id=id))
 
@@ -423,13 +441,9 @@ def product_delete(id):
     if item.order_items or item.combo_components:
         item.active = False; flash("El producto tiene historial o forma parte de un combo y fue desactivado en lugar de eliminarse.", "success")
     else:
-        old_id = item.cloudinary_public_id
+        old_id=item.cloudinary_public_id
+        if old_id: remove_cloudinary_image(old_id)
         db.session.delete(item); flash("Producto eliminado.", "success")
-        db.session.commit()
-        if old_id:
-            try: delete_image(old_id)
-            except Exception: current_app.logger.exception("Could not delete restaurant product Cloudinary image after deletion")
-        return redirect(url_for("restaurant_panel.products"))
     db.session.commit(); return redirect(url_for("restaurant_panel.products"))
 
 @restaurant_panel_bp.get("/comercio/panel/estadisticas")

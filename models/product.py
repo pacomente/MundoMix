@@ -12,9 +12,11 @@ class Product(db.Model):
     stock = db.Column(db.Integer, nullable=False, default=0)
     category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True, index=True)
     image = db.Column(db.String(255))
-    additional_images = db.Column(db.Text, default="")
-    cloudinary_public_id = db.Column(db.String(255))
+    image_url = db.Column(db.String(1000))
+    cloudinary_public_id = db.Column(db.String(255), index=True)
+    additional_image_urls = db.Column(db.Text, default="")
     additional_image_public_ids = db.Column(db.Text, default="")
+    additional_images = db.Column(db.Text, default="")
     featured = db.Column(db.Boolean, default=False, nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -23,15 +25,12 @@ class Product(db.Model):
 
     @property
     def image_list(self):
-        return [x for x in (self.additional_images or "").split(",") if x]
-
-    @property
-    def additional_image_public_id_list(self):
-        return [x for x in (self.additional_image_public_ids or "").split(",") if x]
+        source = self.additional_image_urls if getattr(self, "additional_image_urls", "") else self.additional_images
+        return [x for x in (source or "").split(",") if x]
 
     @property
     def all_images(self):
-        return ([self.image] if self.image else []) + self.image_list
+        return ([self.image_url] if self.image_url else ([self.image] if self.image else [])) + self.image_list
 
     @property
     def available(self):

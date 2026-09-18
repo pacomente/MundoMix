@@ -1,106 +1,133 @@
-"""Centralized, data-safe Cloudinary image storage for MundoMix."""
-from __future__ import annotations
+"""Centralized Cloudinary image service for MundoMix.
 
-from dataclasses import dataclass
-from io import BytesIO
+All new image writes go directly to Cloudinary. Legacy filesystem paths are
+kept only as migration/fallback references until explicitly retired.
+"""
+import io
+import os
+from pathlib import Path
 from uuid import uuid4
 
-from flask import current_app
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
+
+try:
+    import cloudinary
+    import cloudinary.uploader
+    import cloudinary.utils
+except ImportError:  # Allows static tooling to import the module before install.
+    cloudinary = None
 
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
-ALLOWED_MIMES = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-@dataclass(frozen=True)
-class CloudinaryAsset:
-    url: str
-    public_id: str
+def configure():
+    if cloudinary is None:
+        raise RuntimeError("El SDK de Cloudinary no está instalado. Ejecutá pip install -r requirements.txt.")
+    name = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+    key = os.getenv("CLOUDINARY_API_KEY", "").strip()
+    secret = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+    if not all((name, key, secret)):
+        raise RuntimeError("Faltan CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY o CLOUDINARY_API_SECRET.")
+    cloudinary.config(cloud_name=name, api_key=key, api_secret=secret, secure=True)
 
 
-def _client():
-    """Configure and return Cloudinary lazily so local imports/tests do not need it."""
-    import cloudinary
-
-    cloud_name = current_app.config.get("CLOUDINARY_CLOUD_NAME", "").strip()
-    api_key = current_app.config.get("CLOUDINARY_API_KEY", "").strip()
-    api_secret = current_app.config.get("CLOUDINARY_API_SECRET", "").strip()
-    if not all((cloud_name, api_key, api_secret)):
-        raise RuntimeError(
-            "Cloudinary no está configurado. Definí CLOUDINARY_CLOUD_NAME, "
-            "CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET."
-        )
-    cloudinary.config(cloud_name=cloud_name, api_key=api_key, api_secret=api_secret, secure=True)
-    return cloudinary
-
-
-def validate_image(file_storage) -> bytes:
-    if not file_storage or not file_storage.filename:
-        raise ValueError("No se recibió ninguna imagen.")
-
-    filename = file_storage.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+def validate_image(file):
+    if not file or not getattr(file, "filename", ""):
+        return None
+    filename = file.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError("Formato de imagen no permitido. Usá JPG, JPEG, PNG o WEBP.")
-
-    mime = (file_storage.mimetype or "").lower().split(";", 1)[0].strip()
-    if mime and mime not in ALLOWED_MIMES:
-        raise ValueError("El tipo MIME de la imagen no está permitido.")
-
-    raw = file_storage.read(MAX_IMAGE_BYTES + 1)
-    file_storage.stream.seek(0)
+    stream = getattr(file, "stream", file)
+    stream.seek(0)
+    raw = stream.read(MAX_IMAGE_BYTES + 1)
+    stream.seek(0)
     if len(raw) > MAX_IMAGE_BYTES:
         raise ValueError("La imagen no puede superar 8 MB.")
-    if not raw:
-        raise ValueError("La imagen está vacía.")
-
     try:
-        with Image.open(BytesIO(raw)) as image:
-            detected = (image.format or "").upper()
-            if detected not in {"JPEG", "PNG", "WEBP"}:
-                raise ValueError("El contenido real del archivo no es una imagen JPG, PNG o WEBP válida.")
-            image.verify()
-    except (UnidentifiedImageError, OSError) as exc:
+        image = Image.open(io.BytesIO(raw))
+        image.verify()
+        fmt = image.format
+    except Exception as exc:
         raise ValueError("El archivo no contiene una imagen válida.") from exc
-    return raw
+    if fmt not in ALLOWED_FORMATS:
+        raise ValueError("El contenido real de la imagen no es JPG, PNG o WEBP.")
+    return raw, fmt.lower()
 
 
-def upload_image(file_storage, folder: str) -> CloudinaryAsset:
-    raw = validate_image(file_storage)
-    cloudinary = _client()
-    from cloudinary.uploader import upload
-
-    result = upload(
-        BytesIO(raw),
-        resource_type="image",
-        folder=f"mundomix/{folder.strip('/')}",
-        public_id=uuid4().hex,
+def upload_image(file, folder, public_id=None):
+    validated = validate_image(file)
+    if not validated:
+        return None
+    raw, _ = validated
+    configure()
+    public_id = public_id or uuid4().hex
+    result = cloudinary.uploader.upload(
+        io.BytesIO(raw),
+        folder=folder,
+        public_id=public_id,
         overwrite=False,
+        resource_type="image",
+        unique_filename=False,
         use_filename=False,
-        unique_filename=True,
-        transformation=[{"quality": "auto", "fetch_format": "auto"}],
+        invalidate=True,
     )
-    url = result.get("secure_url")
-    public_id = result.get("public_id")
-    if not url or not public_id:
-        raise RuntimeError("Cloudinary no devolvió una URL o public_id válidos.")
-    return CloudinaryAsset(url=url, public_id=public_id)
+    pid = result.get("public_id")
+    optimized_url = generate_url(pid, result.get("secure_url") or result.get("url")) if pid else (result.get("secure_url") or result.get("url"))
+    return {
+        "secure_url": optimized_url,
+        "public_id": pid,
+    }
 
 
-def delete_image(public_id: str | None) -> bool:
+def delete_image(public_id):
     if not public_id:
-        return False
-    cloudinary = _client()
-    from cloudinary.uploader import destroy
-
-    result = destroy(public_id, resource_type="image", invalidate=True)
+        return True
+    configure()
+    result = cloudinary.uploader.destroy(public_id, resource_type="image", invalidate=True)
     status = result.get("result")
     if status not in {"ok", "not found"}:
-        raise RuntimeError(f"Cloudinary no pudo eliminar {public_id!r}: {result}")
-    return status == "ok"
+        raise RuntimeError(f"Cloudinary no pudo eliminar {public_id}: {status or result}")
+    return True
 
 
-def is_external_image(value: str | None) -> bool:
-    value = (value or "").strip().lower()
-    return value.startswith("https://") or value.startswith("http://")
+def generate_url(public_id, fallback_url=None):
+    if not public_id:
+        return fallback_url
+    configure()
+    url, _ = cloudinary.utils.cloudinary_url(
+        public_id,
+        secure=True,
+        resource_type="image",
+        type="upload",
+        transformation=[{"quality": "auto", "fetch_format": "auto"}],
+    )
+    return url or fallback_url
+
+
+def legacy_path_exists(relative_path):
+    from flask import current_app
+    if not relative_path:
+        return False
+    root = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
+    candidate = (root / relative_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return candidate.is_file()
+
+
+def local_legacy_path(relative_path):
+    from flask import current_app
+    if not relative_path:
+        return None
+    root = Path(current_app.config["UPLOAD_FOLDER"]).resolve()
+    candidate = (root / relative_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None

@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, url_for
-from sqlalchemy import or_, asc, desc
+from sqlalchemy import or_, asc, desc, and_
 from sqlalchemy.orm import selectinload
 from models.restaurant import Restaurant, RestaurantCategory, RestaurantProduct, ProductModifierGroup, ModifierGroup, ModifierOption
 from routes.restaurant_common import restaurant_is_open
@@ -16,7 +16,7 @@ def index():
         product_ids=list(set(product_ids+category_ids))
         query=query.filter(or_(Restaurant.name.ilike(like),Restaurant.description.ilike(like),Restaurant.food_type.ilike(like),Restaurant.address.ilike(like),Restaurant.id.in_(product_ids)))
     if food_type: query=query.filter(Restaurant.food_type==food_type)
-    if featured: query=query.filter(Restaurant.products.any(RestaurantProduct.featured.is_(True),RestaurantProduct.active.is_(True)))
+    if featured: query=query.filter(Restaurant.products.any(and_(RestaurantProduct.featured.is_(True), RestaurantProduct.active.is_(True))))
     restaurants=query.all()
     if open_now: restaurants=[r for r in restaurants if restaurant_is_open(r)]
     if sort=="new": restaurants.sort(key=lambda r:r.created_at,reverse=True)
