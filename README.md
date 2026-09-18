@@ -98,6 +98,7 @@ FLASK_DEBUG=0
 SECRET_KEY=una-clave-larga-y-aleatoria
 DATABASE_URL=postgresql+psycopg://usuario:password@localhost:5432/mundomix
 WHATSAPP_NUMBER=
+# UPLOAD_FOLDER se conserva únicamente para compatibilidad/migración de imágenes legacy.
 UPLOAD_FOLDER=uploads
 SESSION_COOKIE_SECURE=1
 PORT=8000
@@ -637,7 +638,7 @@ Debe devolver `{"status":"ok"}`.
 
 ### Imágenes
 
-El proyecto existente actualmente almacena imágenes mediante referencias a archivos bajo `UPLOAD_FOLDER`; este módulo reutiliza ese mecanismo y Pillow para validar imágenes. No se inventó una migración BYTEA sobre el esquema existente porque el modelo real inspeccionado no contiene columnas binarias `BYTEA`. Si se decide migrar también las imágenes históricas a PostgreSQL, debe hacerse como una migración separada y con backup/validación de los archivos existentes.
+Las nuevas imágenes se almacenan directamente en Cloudinary y PostgreSQL conserva sus referencias (`image_url`/URL y `cloudinary_public_id`). `UPLOAD_FOLDER` queda únicamente como compatibilidad para recursos legacy durante la migración; no es almacenamiento permanente de nuevas imágenes. El proyecto auditado no utiliza `BYTEA`/`LargeBinary` para imágenes.
 
 ## Auditoría y correcciones — septiembre 2026
 
@@ -662,17 +663,22 @@ La sección gastronómica fue ampliada sobre la arquitectura multi-comercio exis
 
 Los pedidos guardan snapshots de nombre, precio, modificadores y notas para que cambios posteriores del menú no alteren el historial.
 
-### Limitación de almacenamiento de imágenes
+### Almacenamiento de imágenes
 
-La inspección del proyecto real mostró que la arquitectura actual de MundoMix **no tenía BYTEA/LargeBinary implementado**: los modelos existentes guardan referencias de archivos y las imágenes se sirven desde `UPLOAD_FOLDER`. Esta actualización conserva ese mecanismo para no romper imágenes ni inventar una migración BYTEA no presente. Si se requiere convertir todo el sistema a `BYTEA`, debe hacerse como una migración separada con backup, carga binaria, endpoint de serving y verificación de rendimiento.
+La arquitectura no utiliza `BYTEA`/`LargeBinary` para imágenes. Los campos legacy de archivo se mantienen solamente para compatibilidad y migración segura. Las cargas nuevas utilizan el servicio central de Cloudinary.
 
-### Pruebas ejecutadas
+### Pruebas ejecutadas en esta auditoría
 
 - `python -m compileall -q .` — OK.
-- Parseo de las 43 plantillas Jinja — 0 errores.
+- Parseo de **44 plantillas Jinja** — 0 errores.
 - `node --check static/js/main.js` — OK.
-- ZIP de entrega — integridad OK.
-- No se pudo ejecutar Flask/Gunicorn contra PostgreSQL real en este entorno porque no están instaladas las dependencias de Flask/psycopg ni se dispone de las credenciales/instancia de producción. No se debe interpretar la validación estática como una prueba de Render.
+- Validación Pillow de imagen válida y archivo disfrazado — OK.
+- Validación estática del árbol Alembic — **1 root / 1 head / 0 padres inexistentes**.
+- Ejecución de las 5 funciones `upgrade()` sobre SQLite de prueba — OK.
+- Reejecución de las 5 funciones `upgrade()` sobre el mismo esquema — OK (idempotencia estructural).
+- Búsqueda final de `db.create_all()`, `metadata.create_all()`, `drop_all()` en código Python — 0 coincidencias.
+- Búsqueda final de escrituras locales de imágenes — no hay `file.save()`; `/uploads/<path>` queda solamente como endpoint legacy de lectura.
+- No se pudo ejecutar Flask/Gunicorn contra PostgreSQL/Cloudinary/Render reales porque este entorno no tiene instalados Flask, Flask-Migrate, psycopg ni el SDK Cloudinary y no tiene acceso a las credenciales de producción.
 
 
 # 11. Almacenamiento de imágenes con Cloudinary
@@ -714,10 +720,37 @@ La migración de esquema añade referencias nuevas sin eliminar las columnas leg
 
 ## Alembic
 
-La migración Cloudinary es:
+El árbol actual y sus correcciones relevantes son:
+
+```text
+20260915_01
+  ↓
+20260915_02_gastronomia_20
+  ↓
+20260915_03_printing
+  ↓
+20260918_04_cloudinary
+  ↓
+20260918_05_schema_indexes
+```
+
+La referencia rota `20260915_01_restaurants` fue corregida para apuntar a la revisión real `20260915_01`. No se necesita una migración de merge porque el problema era una referencia a un padre inexistente, no dos heads válidas.
+
+Para cualquier entorno nuevo o existente, aplicar el esquema con:
+
+```bash
+flask db upgrade
+flask db heads
+flask db current
+flask db history
+```
+
+
+Las migraciones recientes son:
 
 ```text
 20260918_04_cloudinary
+20260918_05_schema_indexes
 ```
 
-Su `down_revision` es `20260915_03_printing`, por lo que mantiene una única cadena con las migraciones existentes.
+`20260918_04_cloudinary` hereda de `20260915_03_printing` y `20260918_05_schema_indexes` hereda de `20260918_04_cloudinary`, manteniendo una única cadena.

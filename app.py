@@ -47,12 +47,6 @@ def create_app():
     db.init_app(app)
     migrate.init_app(app, db)
 
-    # Development can create missing tables for a fresh local install.
-    # Production schema changes must go through Flask-Migrate/Alembic.
-    if environment != "production":
-        with app.app_context():
-            db.create_all()
-
     app.register_blueprint(store_bp)
     app.register_blueprint(cart_bp, url_prefix="/carrito")
     app.register_blueprint(checkout_bp, url_prefix="/checkout")
@@ -113,8 +107,16 @@ def create_app():
     @app.context_processor
     def inject_globals():
         from models.settings import Setting
+        from sqlalchemy.exc import SQLAlchemyError
 
-        settings = {s.key: s.value for s in Setting.query.all()}
+        try:
+            settings = {s.key: s.value for s in Setting.query.all()}
+        except SQLAlchemyError:
+            # A failed transaction must never poison the request that renders
+            # an error page.  Do not issue another query on the aborted session.
+            db.session.rollback()
+            app.logger.exception("Could not load global settings; using empty settings.")
+            settings = {}
         cart = session.get("cart", {})
         cart_count = sum(int(v) for v in cart.values()) if cart else 0
         restaurant_cart = session.get("restaurant_cart", {})
@@ -144,6 +146,7 @@ def create_app():
 
     @app.errorhandler(500)
     def server_error(error):
+        db.session.rollback()
         app.logger.error(
             "Unhandled MundoMix server error: %s",
             error,

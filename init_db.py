@@ -1,14 +1,16 @@
 import os
 
 from app import create_app
+from flask_migrate import upgrade
 from extensions import db
-from models import Admin, Category, Product, Setting
+from models import Admin, Category, Setting
 from slugify import make_slug
 from werkzeug.security import generate_password_hash
 
 app = create_app()
 with app.app_context():
-    db.create_all()
+    # Schema creation/evolution belongs to Flask-Migrate/Alembic.
+    upgrade(directory="migrations")
 
     if not Admin.query.first():
         initial_password = os.getenv("ADMIN_INITIAL_PASSWORD", "").strip()
@@ -40,5 +42,5 @@ with app.app_context():
             db.session.add(Setting(key=key, value=value))
 
     db.session.commit()
-    print("Base de datos inicializada.")
+    print("Base de datos inicializada mediante Flask-Migrate/Alembic.")
     print("Usuario admin: admin")
