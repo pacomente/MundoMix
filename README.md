@@ -711,6 +711,17 @@ Migración segura de imágenes legacy:
 python scripts/migrate_images_to_cloudinary.py
 ```
 
-Primero ejecutar la migración Alembic correspondiente (`20260918_04_cloudinary`) en el PostgreSQL objetivo. El script de imágenes conserva los originales y reporta los archivos que no puede migrar.
+Primero ejecutar `flask --app wsgi db upgrade` en el PostgreSQL objetivo. La cadena incluye `20260918_04_cloudinary` y `20260918_05_cloudinary_schema_repair`; esta última es una reparación idempotente para el caso en que Alembic figure actualizado pero falte alguna columna Cloudinary en la base real. El script de imágenes conserva los originales y reporta los archivos que no puede migrar.
 
 La ruta `/uploads/<path:filename>` queda únicamente como lector de compatibilidad para imágenes legacy; ningún upload nuevo se guarda allí.
+
+
+### Auditoría de schema PostgreSQL
+
+Para comprobar la base real sin modificarla, ejecutar:
+
+```bash
+python scripts/audit_postgres_schema.py
+```
+
+El script es **solo lectura**: informa la versión registrada en `alembic_version`, compara las columnas de los modelos SQLAlchemy con PostgreSQL y verifica específicamente todas las referencias Cloudinary. No ejecuta `CREATE`, `ALTER`, `DROP` ni `db.create_all()`.

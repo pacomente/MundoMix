@@ -64,13 +64,14 @@ Se incorporó `scripts/migrate_images_to_cloudinary.py` para ejecutar la migraci
 
 ## Migración DB
 
-Nueva migración:
+Migraciones:
 
-`migrations/versions/20260918_04_cloudinary.py`
+- `migrations/versions/20260918_04_cloudinary.py` — agrega las referencias Cloudinary esperadas.
+- `migrations/versions/20260918_05_cloudinary_schema_repair.py` — reparación idempotente para una base que figure en el head anterior pero todavía no tenga alguna columna.
 
-Base: `20260915_03_printing`.
+Base de la primera: `20260915_03_printing`.
 
-No elimina tablas, columnas ni datos. Agrega solamente referencias nullable para Cloudinary.
+La reparación no crea tablas y no elimina tablas, columnas ni datos. Solo agrega, si faltan, referencias nullable para Cloudinary. Esto cubre especialmente el escenario en que `alembic_version` diga `20260918_04_cloudinary` pero `category.cloudinary_public_id` siga ausente.
 
 ## Aislamiento gastronómico
 
@@ -118,6 +119,8 @@ Así las imágenes antiguas siguen visibles mientras las nuevas usan Cloudinary.
 - `services/cloudinary_service.py`
 - `scripts/migrate_images_to_cloudinary.py`
 - `migrations/versions/20260918_04_cloudinary.py`
+- `migrations/versions/20260918_05_cloudinary_schema_repair.py`
+- `scripts/audit_postgres_schema.py`
 - plantillas HTML que mostraban imágenes
 - `README.md`
 - `AUDITORIA_CLOUDINARY_POSTGRESQL.md`
@@ -125,10 +128,10 @@ Así las imágenes antiguas siguen visibles mientras las nuevas usan Cloudinary.
 ## Pendientes de producción
 
 1. Configurar en Render `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY` y `CLOUDINARY_API_SECRET`.
-2. Ejecutar `flask db upgrade` en el PostgreSQL de producción después de verificar el head actual.
+2. Ejecutar `flask --app wsgi db upgrade` en el PostgreSQL de producción; la migración 05 repara automáticamente referencias Cloudinary ausentes aunque el head anterior ya figure aplicado.
 3. Ejecutar `python scripts/migrate_images_to_cloudinary.py` con acceso a la DB de producción.
 4. Revisar el resultado y conservar los archivos legacy hasta verificar todas las URLs.
 5. Probar un upload, reemplazo, eliminación y persistencia después de restart/redeploy.
-6. Revisar los logs de Render para identificar la primera consulta SQL que precedió a `InFailedSqlTransaction`.
+6. Ejecutar `python scripts/audit_postgres_schema.py` y conservar su salida; luego revisar los logs de Render para identificar la primera consulta SQL que precedió a `InFailedSqlTransaction`.
 
 **Importante:** no se declaró PASS ninguna prueba que requiera servicios externos no disponibles en este entorno.
