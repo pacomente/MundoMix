@@ -12,18 +12,17 @@ def _cols(inspector, table):
 
 def upgrade():
     ins=sa.inspect(op.get_bind()); tables=set(ins.get_table_names())
-    def addcol(table,name,coldef):
-        col,extra=coldef if isinstance(coldef,tuple) else (coldef,{})
-        if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col,**extra))
+    def addcol(table,name,col):
+        if name not in _cols(sa.inspect(op.get_bind()),table): op.add_column(table,sa.Column(name,col))
     # Restaurant configuration.
     for n,c in {
-        "info":sa.Text(),"accept_orders":(sa.Boolean(),{"server_default":sa.true(),"nullable":False}),"pause_message":sa.String(300),
-        "delivery_enabled":(sa.Boolean(),{"server_default":sa.true(),"nullable":False}),"pickup_enabled":(sa.Boolean(),{"server_default":sa.true(),"nullable":False}),
+        "info":sa.Text(),"accept_orders":sa.Boolean(server_default=sa.true(),nullable=False),"pause_message":sa.String(300),
+        "delivery_enabled":sa.Boolean(server_default=sa.true(),nullable=False),"pickup_enabled":sa.Boolean(server_default=sa.true(),nullable=False),
         "delivery_fee":sa.Numeric(12,2),"minimum_order":sa.Numeric(12,2),"delivery_zones":sa.JSON(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"theme_color":sa.String(20)
     }.items(): addcol("restaurant",n,c)
     # Product configuration.
     for n,c in {
-        "previous_price":sa.Numeric(12,2),"stock_control":(sa.Boolean(),{"server_default":sa.false(),"nullable":False}),"display_order":(sa.Integer(),{"server_default":"0","nullable":False}),"label":sa.String(40),"nutrition":sa.Text(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"is_combo":(sa.Boolean(),{"server_default":sa.false(),"nullable":False})
+        "previous_price":sa.Numeric(12,2),"stock_control":sa.Boolean(server_default=sa.false(),nullable=False),"display_order":sa.Integer(server_default="0",nullable=False),"label":sa.String(40),"nutrition":sa.Text(),"prep_min":sa.Integer(),"prep_max":sa.Integer(),"is_combo":sa.Boolean(server_default=sa.false(),nullable=False)
     }.items(): addcol("restaurant_product",n,c)
     # Order and snapshot fields.
     for n,c in {"delivery_zone":sa.String(160),"subtotal":sa.Numeric(12,2),"discount":sa.Numeric(12,2),"delivery_fee":sa.Numeric(12,2),"scheduled_for":sa.DateTime()}.items(): addcol("order",n,c)
