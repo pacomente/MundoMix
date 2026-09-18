@@ -1,5 +1,5 @@
 <article class="product-card">
-<a href="{{ url_for('store.product',slug=p.slug) }}" class="product-img">{% if p.image %}<img loading="lazy" src="{{ url_for('uploaded_file', filename=p.image) }}" alt="{{ p.name }}">{% else %}<div class="no-image">MundoMix</div>{% endif %}{% if p.featured %}<span class="product-badge">Destacado</span>{% endif %}{% if p.stock <= 0 %}<span class="product-badge out">Agotado</span>{% endif %}</a>
+<a href="{{ url_for('store.product',slug=p.slug) }}" class="product-img">{% if p.image %}<img loading="lazy" src="{{ image_src(p.image) }}" alt="{{ p.name }}">{% else %}<div class="no-image">MundoMix</div>{% endif %}{% if p.featured %}<span class="product-badge">Destacado</span>{% endif %}{% if p.stock <= 0 %}<span class="product-badge out">Agotado</span>{% endif %}</a>
 <div class="product-body"><div class="product-category">{{ p.category.name if p.category else 'MundoMix' }}</div><h3><a href="{{ url_for('store.product',slug=p.slug) }}">{{ p.name }}</a></h3>
 <div class="price-row"><div><small>🚚 Con envío</small><strong>${{ "{:,.0f}".format(p.price_delivery) }}</strong></div><div><small>🏪 Retiro</small><strong>${{ "{:,.0f}".format(p.price_pickup) }}</strong></div></div>
 <div class="stock {{ 'stock-out' if p.stock <= 0 else 'stock-low' if p.stock <= 5 else 'stock-ok' }}">{{ p.stock_label }}</div>

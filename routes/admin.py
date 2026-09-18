@@ -1,22 +1,18 @@
 from functools import wraps
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
-from uuid import uuid4
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
 from urllib.parse import urlsplit
 from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
 from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import joinedload
 from extensions import db
 from models import Product, Category, Banner, Order, OrderItem, Admin, Setting, Restaurant, RestaurantUser, RestaurantCategory, RestaurantProduct, RestaurantHour
+from services.cloudinary_service import upload_image, delete_image
 from slugify import make_slug
 
 admin_bp = Blueprint("admin", __name__)
 STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En camino", "Entregado", "Cancelado"]
-ALLOWED = {"jpg", "jpeg", "png", "webp"}
-
 
 def _safe_next(value):
     if not value:
@@ -37,16 +33,8 @@ def admin_required(fn):
 
 
 def save_image(file, folder):
-    if not file or not file.filename:
-        return None
-    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
-    if ext not in ALLOWED:
-        raise ValueError("Formato de imagen no permitido. Usá JPG, JPEG, PNG o WEBP.")
-    name = f"{uuid4().hex}.{ext}"
-    target = Path(current_app.config["UPLOAD_FOLDER"]) / folder
-    target.mkdir(parents=True, exist_ok=True)
-    file.save(target / secure_filename(name))
-    return f"{folder}/{name}"
+    """Upload an image to Cloudinary; never persist new uploads on Render disk."""
+    return upload_image(file, folder) if file and file.filename else None
 
 
 def parse_money(value):
@@ -168,21 +156,35 @@ def product_form(id=None):
             item.category_id = request.form.get("category_id", type=int) or None
             item.featured = "featured" in request.form
             item.active = "active" in request.form
+            old_image_id = item.cloudinary_public_id if item else None
+            new_assets = []
             image = save_image(request.files.get("image"), "products")
             if image:
-                item.image = image
-            extra = []
+                new_assets.append(image)
+                item.image = image.url
+                item.cloudinary_public_id = image.public_id
+            extra_assets = []
             for file in request.files.getlist("additional_images"):
                 saved = save_image(file, "products")
                 if saved:
-                    extra.append(saved)
-            if extra:
-                item.additional_images = ",".join(extra)
+                    new_assets.append(saved)
+                    extra_assets.append(saved)
+            if extra_assets:
+                old_extra_urls = item.image_list
+                old_extra_ids = item.additional_image_public_id_list
+                item.additional_images = ",".join(old_extra_urls + [a.url for a in extra_assets])
+                item.additional_image_public_ids = ",".join(old_extra_ids + [a.public_id for a in extra_assets])
             db.session.commit()
+            if image and old_image_id and old_image_id != image.public_id:
+                try: delete_image(old_image_id)
+                except Exception: current_app.logger.exception("Could not delete replaced Cloudinary product image")
             flash("Producto guardado correctamente.", "success")
             return redirect(url_for("admin.products"))
         except Exception as exc:
             db.session.rollback()
+            for asset in locals().get("new_assets", []):
+                try: delete_image(asset.public_id)
+                except Exception: current_app.logger.exception("Could not roll back Cloudinary upload %s", asset.public_id)
             flash(str(exc), "error")
     return render_template("admin/product_form.html", product=item, categories=categories)
 
@@ -190,8 +192,13 @@ def product_form(id=None):
 @admin_required
 def product_delete(id):
     item = Product.query.get_or_404(id)
+    cloudinary_ids = [item.cloudinary_public_id, *item.additional_image_public_id_list]
     db.session.delete(item)
     db.session.commit()
+    for public_id in cloudinary_ids:
+        if public_id:
+            try: delete_image(public_id)
+            except Exception: current_app.logger.exception("Could not delete Cloudinary product image after product deletion")
     flash("Producto eliminado.", "success")
     return redirect(url_for("admin.products"))
 
@@ -200,8 +207,14 @@ def product_delete(id):
 @admin_required
 def product_image_delete(id):
     item = Product.query.get_or_404(id)
+    old_id = item.cloudinary_public_id
     item.image = None
-    db.session.commit(); flash("Imagen principal eliminada.", "success")
+    item.cloudinary_public_id = None
+    db.session.commit()
+    if old_id:
+        try: delete_image(old_id)
+        except Exception: current_app.logger.exception("Could not delete Cloudinary product image")
+    flash("Imagen principal eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
 @admin_bp.post("/productos/<int:id>/imagenes/eliminar/<int:index>")
@@ -209,10 +222,17 @@ def product_image_delete(id):
 def product_extra_image_delete(id, index):
     item = Product.query.get_or_404(id)
     images = item.image_list
+    ids = item.additional_image_public_id_list
     if 0 <= index < len(images):
         images.pop(index)
+        removed_id = ids.pop(index) if index < len(ids) else None
         item.additional_images = ",".join(images)
-        db.session.commit(); flash("Imagen adicional eliminada.", "success")
+        item.additional_image_public_ids = ",".join(ids)
+        db.session.commit()
+        if removed_id:
+            try: delete_image(removed_id)
+            except Exception: current_app.logger.exception("Could not delete Cloudinary additional product image")
+        flash("Imagen adicional eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
 @admin_bp.post("/productos/<int:id>/toggle")
@@ -272,10 +292,15 @@ def category_edit(id):
             slug = f"{base_slug}-{i}"
             i += 1
         item.slug = slug
-        image = save_image(request.files.get("image"), "categories")
-        if image:
-            item.image = image
+        old_id = item.cloudinary_public_id
+        new_asset = save_image(request.files.get("image"), "categories")
+        if new_asset:
+            item.image = new_asset.url
+            item.cloudinary_public_id = new_asset.public_id
         db.session.commit()
+        if new_asset and old_id and old_id != new_asset.public_id:
+            try: delete_image(old_id)
+            except Exception: current_app.logger.exception("Could not delete replaced Cloudinary category image")
         flash("Categoría actualizada.", "success")
     except Exception as exc:
         db.session.rollback()
@@ -295,7 +320,11 @@ def category_delete(id):
     item = Category.query.get_or_404(id)
     for product in item.products:
         product.category_id = None
+    old_id = item.cloudinary_public_id
     db.session.delete(item); db.session.commit()
+    if old_id:
+        try: delete_image(old_id)
+        except Exception: current_app.logger.exception("Could not delete Cloudinary category image")
     flash("Categoría eliminada; los productos quedaron sin categoría.", "success")
     return redirect(url_for("admin.categories"))
 
@@ -307,12 +336,17 @@ def banners():
             image = save_image(request.files.get("image"), "banners")
             if not image:
                 raise ValueError("La imagen del banner es obligatoria.")
-            db.session.add(Banner(title=request.form.get("title", "").strip(), subtitle=request.form.get("subtitle", "").strip(),
-                image=image, button_text=request.form.get("button_text", "").strip(), button_url=request.form.get("button_url", "").strip(),
-                display_order=request.form.get("display_order", 0, type=int), active="active" in request.form))
+            banner = Banner(title=request.form.get("title", "").strip(), subtitle=request.form.get("subtitle", "").strip(),
+                image=image.url, cloudinary_public_id=image.public_id, button_text=request.form.get("button_text", "").strip(), button_url=request.form.get("button_url", "").strip(),
+                display_order=request.form.get("display_order", 0, type=int), active="active" in request.form)
+            db.session.add(banner)
             db.session.commit(); flash("Banner creado.", "success")
         except Exception as exc:
-            db.session.rollback(); flash(str(exc), "error")
+            db.session.rollback()
+            if 'image' in locals() and image:
+                try: delete_image(image.public_id)
+                except Exception: current_app.logger.exception("Could not roll back Cloudinary banner upload")
+            flash(str(exc), "error")
     return render_template("admin/banners.html", banners=Banner.query.order_by(Banner.display_order, Banner.id).all())
 
 @admin_bp.post("/banners/<int:id>/toggle")
@@ -325,17 +359,40 @@ def banner_toggle(id):
 @admin_required
 def banner_edit(id):
     item = Banner.query.get_or_404(id)
-    item.title = request.form.get("title", "").strip(); item.subtitle = request.form.get("subtitle", "").strip()
-    item.button_text = request.form.get("button_text", "").strip(); item.button_url = request.form.get("button_url", "").strip()
-    item.display_order = request.form.get("display_order", 0, type=int); item.active = "active" in request.form
-    image = save_image(request.files.get("image"), "banners")
-    if image: item.image = image
-    db.session.commit(); flash("Banner actualizado.", "success"); return redirect(url_for("admin.banners"))
+    old_id = item.cloudinary_public_id
+    image = None
+    try:
+        item.title = request.form.get("title", "").strip(); item.subtitle = request.form.get("subtitle", "").strip()
+        item.button_text = request.form.get("button_text", "").strip(); item.button_url = request.form.get("button_url", "").strip()
+        item.display_order = request.form.get("display_order", 0, type=int); item.active = "active" in request.form
+        image = save_image(request.files.get("image"), "banners")
+        if image:
+            item.image = image.url
+            item.cloudinary_public_id = image.public_id
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        if image:
+            try: delete_image(image.public_id)
+            except Exception: current_app.logger.exception("Could not roll back Cloudinary banner upload")
+        current_app.logger.exception("Banner update failed")
+        flash(str(exc), "error")
+        return redirect(url_for("admin.banners"))
+    if image and old_id and old_id != image.public_id:
+        try: delete_image(old_id)
+        except Exception: current_app.logger.exception("Could not delete replaced Cloudinary banner image")
+    flash("Banner actualizado.", "success"); return redirect(url_for("admin.banners"))
 
 @admin_bp.post("/banners/<int:id>/eliminar")
 @admin_required
 def banner_delete(id):
-    db.session.delete(Banner.query.get_or_404(id)); db.session.commit(); flash("Banner eliminado.", "success")
+    item = Banner.query.get_or_404(id)
+    old_id = item.cloudinary_public_id
+    db.session.delete(item); db.session.commit()
+    if old_id:
+        try: delete_image(old_id)
+        except Exception: current_app.logger.exception("Could not delete Cloudinary banner image")
+    flash("Banner eliminado.", "success")
     return redirect(url_for("admin.banners"))
 
 @admin_bp.get("/pedidos")

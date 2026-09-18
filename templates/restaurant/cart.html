@@ -16,7 +16,7 @@
       <div class="panel cart-lines">
         {% for i in items %}
         <div class="cart-line">
-          <div class="cart-line-image">{% if i.product.image %}<img src="{{ url_for('uploaded_file',filename=i.product.image) }}" alt="">{% else %}🍔{% endif %}</div>
+          <div class="cart-line-image">{% if i.product.image %}<img src="{{ image_src(i.product.image) }}" alt="">{% else %}🍔{% endif %}</div>
           <div class="cart-line-copy">
             <h3>{{ i.product.name }}</h3>
             {% for m in i.modifiers %}<small>+ {{ m.option }}{% if m.price|float %} (+${{ "{:,.0f}".format(m.price|float) }}){% endif %}</small>{% endfor %}

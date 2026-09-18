@@ -13,6 +13,8 @@ class Product(db.Model):
     category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True, index=True)
     image = db.Column(db.String(255))
     additional_images = db.Column(db.Text, default="")
+    cloudinary_public_id = db.Column(db.String(255))
+    additional_image_public_ids = db.Column(db.Text, default="")
     featured = db.Column(db.Boolean, default=False, nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -22,6 +24,10 @@ class Product(db.Model):
     @property
     def image_list(self):
         return [x for x in (self.additional_images or "").split(",") if x]
+
+    @property
+    def additional_image_public_id_list(self):
+        return [x for x in (self.additional_image_public_ids or "").split(",") if x]
 
     @property
     def all_images(self):
