@@ -4,7 +4,7 @@ from uuid import uuid4
 from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
 from urllib.parse import urlsplit
 from werkzeug.security import check_password_hash, generate_password_hash
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import joinedload
 from services.cloudinary_service import upload_image, delete_image
@@ -15,6 +15,39 @@ from slugify import make_slug
 admin_bp = Blueprint("admin", __name__)
 STATUSES = ["Nuevo", "Contactado", "Confirmado", "Preparando", "Listo", "En camino", "Entregado", "Cancelado"]
 ALLOWED = {"jpg", "jpeg", "png", "webp"}
+
+
+@admin_bp.route("/repair-db-schema")
+def repair_db_schema():
+    """Ruta pública de emergencia para crear todas las columnas de Cloudinary e imágenes faltantes en PostgreSQL."""
+    queries = [
+        "ALTER TABLE product ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE product ADD COLUMN IF NOT EXISTS image_url TEXT;",
+        "ALTER TABLE product ADD COLUMN IF NOT EXISTS additional_image_urls TEXT;",
+        "ALTER TABLE product ADD COLUMN IF NOT EXISTS additional_image_public_ids TEXT;",
+        "ALTER TABLE product ADD COLUMN IF NOT EXISTS additional_images TEXT;",
+        "ALTER TABLE category ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE category ADD COLUMN IF NOT EXISTS image_url TEXT;",
+        "ALTER TABLE banner ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE banner ADD COLUMN IF NOT EXISTS image_url TEXT;",
+        "ALTER TABLE restaurant ADD COLUMN IF NOT EXISTS logo_cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE restaurant ADD COLUMN IF NOT EXISTS banner_cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE restaurant ADD COLUMN IF NOT EXISTS logo_url TEXT;",
+        "ALTER TABLE restaurant ADD COLUMN IF NOT EXISTS banner_url TEXT;",
+        "ALTER TABLE restaurant_category ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE restaurant_category ADD COLUMN IF NOT EXISTS image_url TEXT;",
+        "ALTER TABLE restaurant_product ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255);",
+        "ALTER TABLE restaurant_product ADD COLUMN IF NOT EXISTS image_url TEXT;"
+    ]
+    for q in queries:
+        try:
+            db.session.execute(text(q))
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            return f"Error al ejecutar: {q} -> {str(e)}", 500
+
+    return "✅ Esquema de base de datos actualizado con éxito. Podés ingresar a /admin.", 200
 
 
 def _safe_next(value):
@@ -44,6 +77,7 @@ def save_image(file, folder, public_id=None):
 def delete_image_ref(public_id):
     if public_id:
         delete_image(public_id)
+
 
 def parse_money(value):
     try:
@@ -82,6 +116,7 @@ def unique_restaurant_slug(name, current_id=None):
         slug = f"{base}-{i}"
         i += 1
 
+
 @admin_bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -95,10 +130,12 @@ def login():
         flash("Usuario o contraseña incorrectos.", "error")
     return render_template("admin/login.html")
 
+
 @admin_bp.get("/logout")
 def logout():
     session.clear()
     return redirect(url_for("admin.login"))
+
 
 @admin_bp.get("/")
 @admin_bp.get("")
@@ -124,11 +161,13 @@ def dashboard():
         delivered_orders=Order.query.filter_by(status="Entregado").count(), sales=Decimal(str(sales)),
         recent_orders=Order.query.order_by(desc(Order.created_at)).limit(8).all(), best_products=best)
 
+
 @admin_bp.route("/productos")
 @admin_bp.route("/products")
 @admin_required
 def products():
     return render_template("admin/products.html", products=Product.query.order_by(desc(Product.created_at)).all())
+
 
 @admin_bp.route("/productos/nuevo", methods=["GET", "POST"])
 @admin_bp.route("/productos/<int:id>/editar", methods=["GET", "POST"])
@@ -192,6 +231,7 @@ def product_form(id=None):
             flash(str(exc), "error")
     return render_template("admin/product_form.html", product=item, categories=categories)
 
+
 @admin_bp.post("/productos/<int:id>/eliminar")
 @admin_required
 def product_delete(id):
@@ -216,6 +256,7 @@ def product_image_delete(id):
     db.session.commit(); flash("Imagen principal eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
+
 @admin_bp.post("/productos/<int:id>/imagenes/eliminar/<int:index>")
 @admin_required
 def product_extra_image_delete(id, index):
@@ -231,6 +272,7 @@ def product_extra_image_delete(id, index):
         db.session.commit(); flash("Imagen adicional eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
+
 @admin_bp.post("/productos/<int:id>/toggle")
 @admin_required
 def product_toggle(id):
@@ -239,6 +281,7 @@ def product_toggle(id):
     db.session.commit()
     flash(f"Producto {'activado' if item.active else 'desactivado'}.", "success")
     return redirect(url_for("admin.products"))
+
 
 @admin_bp.route("/categorias", methods=["GET", "POST"])
 @admin_bp.route("/categories", methods=["GET", "POST"])
@@ -273,6 +316,7 @@ def categories():
                     except Exception: current_app.logger.exception("Cloudinary cleanup failed for %s", public_id)
                 flash(str(exc), "error")
     return render_template("admin/categories.html", categories=Category.query.order_by(Category.name).all())
+
 
 @admin_bp.post("/categorias/<int:id>/editar")
 @admin_required
@@ -328,12 +372,14 @@ def category_image_delete(id):
     flash("Imagen de categoría eliminada.", "success")
     return redirect(url_for("admin.categories"))
 
+
 @admin_bp.post("/categorias/<int:id>/toggle")
 @admin_required
 def category_toggle(id):
     item = Category.query.get_or_404(id); item.active = not item.active; db.session.commit()
     flash(f"Categoría {'activada' if item.active else 'desactivada'}.", "success")
     return redirect(url_for("admin.categories"))
+
 
 @admin_bp.post("/categorias/<int:id>/eliminar")
 @admin_required
@@ -349,11 +395,10 @@ def category_delete(id):
         db.session.commit()
     except Exception:
         db.session.rollback()
-        # The Cloudinary resource was already removed. Keep the failed DB row
-        # transaction rolled back rather than silently pretending deletion succeeded.
         raise
     flash("Categoría eliminada; los productos quedaron sin categoría.", "success")
     return redirect(url_for("admin.categories"))
+
 
 @admin_bp.route("/banners", methods=["GET", "POST"])
 @admin_required
@@ -376,11 +421,13 @@ def banners():
             flash(str(exc), "error")
     return render_template("admin/banners.html", banners=Banner.query.order_by(Banner.display_order, Banner.id).all())
 
+
 @admin_bp.post("/banners/<int:id>/toggle")
 @admin_required
 def banner_toggle(id):
     item = Banner.query.get_or_404(id); item.active = not item.active; db.session.commit()
     flash("Banner actualizado.", "success"); return redirect(url_for("admin.banners"))
+
 
 @admin_bp.post("/banners/<int:id>/editar")
 @admin_required
@@ -405,6 +452,7 @@ def banner_edit(id):
         except Exception: current_app.logger.exception("Could not delete replaced banner image %s", old_id)
     flash("Banner actualizado.", "success"); return redirect(url_for("admin.banners"))
 
+
 @admin_bp.post("/banners/<int:id>/eliminar")
 @admin_required
 def banner_delete(id):
@@ -412,6 +460,7 @@ def banner_delete(id):
     if item.cloudinary_public_id: delete_image_ref(item.cloudinary_public_id)
     db.session.delete(item); db.session.commit(); flash("Banner eliminado.", "success")
     return redirect(url_for("admin.banners"))
+
 
 @admin_bp.get("/pedidos")
 @admin_bp.get("/orders")
@@ -423,13 +472,11 @@ def orders():
     orders_list = query.options(joinedload(Order.restaurant)).order_by(desc(Order.created_at)).all()
     return render_template("admin/orders.html", orders=orders_list, statuses=STATUSES, selected_status=status)
 
+
 @admin_bp.route("/pedidos/<int:id>", methods=["GET", "POST"])
 @admin_required
 def order_detail(id):
     if request.method == "POST":
-        # Lock the order and the affected products inside one transaction.
-        # PostgreSQL then prevents two concurrent confirmations from both
-        # passing the stock check with the same inventory.
         order = db.session.execute(
             select(Order).where(Order.id == id).with_for_update()
         ).scalar_one_or_none()
@@ -472,7 +519,6 @@ def order_detail(id):
             db.session.commit()
             flash("Pedido confirmado y stock descontado.", "success")
         elif order.status == "Confirmado" and new_status != "Confirmado":
-            # Stock is intentionally not restored automatically; this avoids double-restocking and keeps auditability simple.
             order.status = new_status
             db.session.commit()
             flash("Estado actualizado. El stock no se repone automáticamente.", "success")
@@ -558,6 +604,7 @@ def restaurant_toggle(id):
 def restaurant_panel_link(id):
     restaurant = Restaurant.query.get_or_404(id)
     return redirect(url_for("restaurants.detail", slug=restaurant.slug))
+
 
 @admin_bp.route("/configuracion", methods=["GET", "POST"])
 @admin_bp.route("/settings", methods=["GET", "POST"])
