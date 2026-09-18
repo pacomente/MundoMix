@@ -675,53 +675,49 @@ La inspección del proyecto real mostró que la arquitectura actual de MundoMix 
 - No se pudo ejecutar Flask/Gunicorn contra PostgreSQL real en este entorno porque no están instaladas las dependencias de Flask/psycopg ni se dispone de las credenciales/instancia de producción. No se debe interpretar la validación estática como una prueba de Render.
 
 
-## Gastronomía 3.0 — impresión profesional
-- Ruta: `/comercio/panel/pedidos/<id>/imprimir` (siempre aislada por `restaurant_id`).
-- La impresión marca `Order.printed_at` pero nunca cambia el estado ni crea otro pedido.
-- Formatos preparados: 58 mm, 80 mm y A4 mediante CSS de impresión y `window.print()`.
-- Preferencias por comercio en `Restaurant.print_settings`: ancho, logo MundoMix, logo del local, dirección y teléfono.
-- Reimpresión reutiliza el mismo pedido.
-- La comanda incluye branding MundoMix + comercio, cliente, método, programación, productos, modificadores, notas, descuentos, delivery y total.
-- La implementación sigue usando el almacenamiento de imágenes existente del proyecto; no se inventa una migración BYTEA sin la base PostgreSQL real.
+# 11. Almacenamiento de imágenes con Cloudinary
 
-### Correcciones 3.0
-- Corregido contador global del carrito gastronómico para el nuevo formato de sesión basado en líneas/diccionarios.
-- Corregido panel de pedidos: ahora recibe `status_counts` y filtros de historial.
-- Corregida actualización de carrito para formato legado y formato nuevo.
-- Validación backend de zonas de delivery.
-- Impresión y reimpresión aisladas por comercio.
+Todas las imágenes nuevas de MundoMix se almacenan directamente en Cloudinary. PostgreSQL conserva la URL optimizada HTTPS y el `public_id`. El filesystem de Render no se utiliza como almacenamiento permanente.
 
-## Cloudinary + PostgreSQL (actualización 2026-09-18)
+Variables requeridas en producción:
 
-Las imágenes nuevas de MundoMix se almacenan en Cloudinary y PostgreSQL conserva la URL HTTPS y su `public_id`. Los campos de imagen existentes se mantienen para compatibilidad con imágenes legacy; no se borran automáticamente.
-
-Variables de entorno requeridas para uploads:
-
-```text
+```env
 CLOUDINARY_CLOUD_NAME=
 CLOUDINARY_API_KEY=
 CLOUDINARY_API_SECRET=
 ```
 
-Folders usados: `mundomix/products`, `mundomix/categories`, `mundomix/banners`, `mundomix/restaurants/logos`, `mundomix/restaurants/banners` y `mundomix/restaurants/products`.
+El SDK oficial utilizado es `cloudinary` y la lógica de upload/delete/URL/validación está centralizada en `services/cloudinary_service.py`.
 
-Migración segura de imágenes legacy:
+Carpetas principales:
+
+```text
+mundomix/products
+mundomix/categories
+mundomix/banners
+mundomix/restaurants/{restaurant_id}/logo
+mundomix/restaurants/{restaurant_id}/banner
+mundomix/restaurants/{restaurant_id}/products
+```
+
+## Migración de imágenes existentes
+
+Después de aplicar las migraciones de Alembic, ejecutar manualmente:
 
 ```bash
 python scripts/migrate_images_to_cloudinary.py
 ```
 
-Primero ejecutar `flask --app wsgi db upgrade` en el PostgreSQL objetivo. La cadena incluye `20260918_04_cloudinary` y `20260918_05_cloudinary_schema_repair`; esta última es una reparación idempotente para el caso en que Alembic figure actualizado pero falte alguna columna Cloudinary en la base real. El script de imágenes conserva los originales y reporta los archivos que no puede migrar.
+El script es repetible, conserva los archivos legacy, no usa `drop_all()`, continúa ante errores y muestra encontradas/migradas/ya migradas/fallidas. No se ejecuta automáticamente al iniciar Flask.
 
-La ruta `/uploads/<path:filename>` queda únicamente como lector de compatibilidad para imágenes legacy; ningún upload nuevo se guarda allí.
+La migración de esquema añade referencias nuevas sin eliminar las columnas legacy. Las columnas antiguas se mantienen hasta verificar la migración completa.
 
+## Alembic
 
-### Auditoría de schema PostgreSQL
+La migración Cloudinary es:
 
-Para comprobar la base real sin modificarla, ejecutar:
-
-```bash
-python scripts/audit_postgres_schema.py
+```text
+20260918_04_cloudinary
 ```
 
-El script es **solo lectura**: informa la versión registrada en `alembic_version`, compara las columnas de los modelos SQLAlchemy con PostgreSQL y verifica específicamente todas las referencias Cloudinary. No ejecuta `CREATE`, `ALTER`, `DROP` ni `db.create_all()`.
+Su `down_revision` es `20260915_03_printing`, por lo que mantiene una única cadena con las migraciones existentes.
