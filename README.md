@@ -690,3 +690,27 @@ La inspección del proyecto real mostró que la arquitectura actual de MundoMix 
 - Corregida actualización de carrito para formato legado y formato nuevo.
 - Validación backend de zonas de delivery.
 - Impresión y reimpresión aisladas por comercio.
+
+## Cloudinary + PostgreSQL (actualización 2026-09-18)
+
+Las imágenes nuevas de MundoMix se almacenan en Cloudinary y PostgreSQL conserva la URL HTTPS y su `public_id`. Los campos de imagen existentes se mantienen para compatibilidad con imágenes legacy; no se borran automáticamente.
+
+Variables de entorno requeridas para uploads:
+
+```text
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+```
+
+Folders usados: `mundomix/products`, `mundomix/categories`, `mundomix/banners`, `mundomix/restaurants/logos`, `mundomix/restaurants/banners` y `mundomix/restaurants/products`.
+
+Migración segura de imágenes legacy:
+
+```bash
+python scripts/migrate_images_to_cloudinary.py
+```
+
+Primero ejecutar la migración Alembic correspondiente (`20260918_04_cloudinary`) en el PostgreSQL objetivo. El script de imágenes conserva los originales y reporta los archivos que no puede migrar.
+
+La ruta `/uploads/<path:filename>` queda únicamente como lector de compatibilidad para imágenes legacy; ningún upload nuevo se guarda allí.
