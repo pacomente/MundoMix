@@ -1,0 +1,5 @@
+# Alembic migrations
+
+Production schema changes are applied with Flask-Migrate/Alembic. Do not use
+`db.create_all()` or `drop_all()` to update production, and never edit the
+`alembic_version` table manually.

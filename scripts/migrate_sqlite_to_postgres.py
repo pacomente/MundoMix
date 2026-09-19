@@ -138,14 +138,6 @@ def main() -> int:
         max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
         pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
     )
-
-    # Schema evolution is owned by Alembic. Never create tables from metadata here.
-    from flask_migrate import upgrade
-    from app import create_app
-    migration_app = create_app()
-    with migration_app.app_context():
-        upgrade(directory=str(BASE_DIR / "migrations"))
-
     model_tables = {
         "category": Category.__table__,
         "product": Product.__table__,
@@ -155,6 +147,20 @@ def main() -> int:
         "banner": Banner.__table__,
         "setting": Setting.__table__,
     }
+
+    with target_engine.connect() as conn:
+        missing_target = [
+            table for table in TABLE_ORDER
+            if conn.execute(
+                text("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = :table"),
+                {"table": table},
+            ).scalar() is None
+        ]
+    if missing_target:
+        raise RuntimeError(
+            "El PostgreSQL destino no tiene las tablas necesarias: " + ", ".join(missing_target) +
+            ". Ejecutá primero `flask --app wsgi db upgrade`; este script no crea ni modifica el esquema con create_all()."
+        )
 
     with target_engine.begin() as conn:
         if not args.allow_existing_target:

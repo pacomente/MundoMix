@@ -93,8 +93,8 @@ def checkout():
     checkout_token = request.form.get("checkout_token", "").strip()
     if not checkout_token:
         return render_checkout(method, "No se pudo validar el formulario. Actualizá la página e intentá nuevamente.")
-    if checkout_token == session.get("last_checkout_token"):
-        return render_checkout(method, "Este pedido ya fue enviado. Revisá la pantalla anterior antes de volver a intentarlo.")
+    if checkout_token != session.get("checkout_form_token") or checkout_token == session.get("last_checkout_token"):
+        return render_checkout(method, "El formulario venció o ya fue enviado. Actualizá la página e intentá nuevamente.")
 
     name = request.form.get("customer_name", "").strip()
     phone = request.form.get("customer_phone", "").strip()
@@ -140,6 +140,7 @@ def checkout():
         # order is confirmed from the admin panel. Keep that business rule.
         db.session.commit()
         session["last_checkout_token"] = checkout_token
+        session.pop("checkout_form_token", None)
 
     except SQLAlchemyError:
         db.session.rollback()

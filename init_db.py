@@ -1,25 +1,25 @@
-"""Bootstrap a new MundoMix database through Alembic, never create_all()."""
 import os
-import subprocess
-import sys
+
+from flask_migrate import upgrade
+from werkzeug.security import generate_password_hash
 
 from app import create_app
 from extensions import db
 from models import Admin, Category, Setting
 from slugify import make_slug
-from werkzeug.security import generate_password_hash
 
 app = create_app()
 with app.app_context():
-    subprocess.run(
-        [sys.executable, "-m", "flask", "--app", "wsgi", "db", "upgrade"],
-        check=True,
-    )
+    # Schema changes are always handled by Alembic, even for a fresh local DB.
+    upgrade()
 
     if not Admin.query.first():
         initial_password = os.getenv("ADMIN_INITIAL_PASSWORD", "").strip()
         if not initial_password:
-            raise RuntimeError("ADMIN_INITIAL_PASSWORD es obligatoria para crear el primer administrador.")
+            raise RuntimeError(
+                "ADMIN_INITIAL_PASSWORD es obligatoria para crear el primer administrador. "
+                "Configurala en .env o en el entorno y volvé a ejecutar init_db.py."
+            )
         db.session.add(Admin(username="admin", password_hash=generate_password_hash(initial_password)))
 
     if not Category.query.first():

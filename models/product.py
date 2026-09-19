@@ -1,5 +1,8 @@
-from datetime import datetime
+from __future__ import annotations
+
 import json
+from datetime import datetime
+
 from extensions import db
 
 
@@ -13,10 +16,11 @@ class Product(db.Model):
     price_pickup = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     stock = db.Column(db.Integer, nullable=False, default=0)
     category_id = db.Column(db.Integer, db.ForeignKey("category.id"), nullable=True, index=True)
-    image = db.Column(db.String(500))
+    # Kept as `image` for compatibility; it now contains Cloudinary secure_url.
+    image = db.Column(db.String(1000))
     cloudinary_public_id = db.Column(db.String(255))
+    # JSON arrays: [{"url": "...", "public_id": "..."}, ...]
     additional_images = db.Column(db.Text, default="")
-    additional_image_public_ids = db.Column(db.Text, default="")
     featured = db.Column(db.Boolean, default=False, nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -24,16 +28,26 @@ class Product(db.Model):
     category = db.relationship("Category", back_populates="products")
 
     @property
-    def image_list(self):
-        return [x for x in (self.additional_images or "").split(",") if x]
+    def additional_image_assets(self):
+        raw = self.additional_images or ""
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                assets = []
+                for item in data:
+                    if isinstance(item, dict) and item.get("url"):
+                        assets.append({"url": item["url"], "public_id": item.get("public_id")})
+                    elif isinstance(item, str) and item:
+                        assets.append({"url": item, "public_id": None})
+                return assets
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        # Legacy format: comma-separated local paths/URLs.
+        return [{"url": x.strip(), "public_id": None} for x in raw.split(",") if x.strip()]
 
     @property
-    def additional_public_id_list(self):
-        try:
-            value = json.loads(self.additional_image_public_ids or "[]")
-            return value if isinstance(value, list) else []
-        except (TypeError, ValueError):
-            return []
+    def image_list(self):
+        return [asset["url"] for asset in self.additional_image_assets]
 
     @property
     def all_images(self):
@@ -49,4 +63,7 @@ class Product(db.Model):
             return "Agotado"
         if self.stock <= 5:
             return "Últimas unidades"
-        return "En stock"
+        return "Disponible"
+
+    def set_additional_image_assets(self, assets):
+        self.additional_images = json.dumps(assets, ensure_ascii=False, separators=(",", ":")) if assets else ""

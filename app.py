@@ -3,6 +3,7 @@ import secrets
 
 from flask import Flask, jsonify, render_template, session
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from config import Config
 from extensions import db, migrate
@@ -10,6 +11,7 @@ from routes.admin import admin_bp
 from routes.cart import cart_bp
 from routes.checkout import checkout_bp
 from routes.store import store_bp
+from services.cloudinary_service import build_image_url, configure_cloudinary
 
 
 def create_app():
@@ -21,29 +23,26 @@ def create_app():
     configured_secret = os.getenv("SECRET_KEY", "").strip()
     if not configured_secret:
         if environment == "production":
-            raise RuntimeError(
-                "SECRET_KEY no está configurada. Definí una SECRET_KEY segura en .env "
-                "o en las variables de entorno antes de iniciar MundoMix en producción."
-            )
-        # Development only: generate an ephemeral secret instead of using a predictable value.
+            raise RuntimeError("SECRET_KEY no está configurada en producción.")
         configured_secret = secrets.token_hex(32)
     app.config["SECRET_KEY"] = configured_secret
 
-    if environment == "production":
-        missing_cloudinary = [
-            key for key in ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
-            if not app.config.get(key)
-        ]
-        if missing_cloudinary:
-            raise RuntimeError(
-                "Faltan variables de Cloudinary en producción: " + ", ".join(missing_cloudinary)
-            )
-
-    from pathlib import Path
-    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    # In production Cloudinary credentials are mandatory. In development an
+    # explicit missing configuration is allowed so the storefront can boot,
+    # but image upload operations fail with a clear message.
+    configure_cloudinary()
 
     db.init_app(app)
     migrate.init_app(app, db)
+
+    @app.template_global("image_url")
+    def image_url(public_id, secure_url="", width=None, height=None):
+        try:
+            return build_image_url(public_id, secure_url, width=width, height=height)
+        except Exception:
+            # Rendering must remain usable if Cloudinary is temporarily unavailable.
+            app.logger.exception("Could not build Cloudinary image URL")
+            return secure_url or ""
 
     app.register_blueprint(store_bp)
     app.register_blueprint(cart_bp, url_prefix="/carrito")
@@ -52,36 +51,39 @@ def create_app():
 
     @app.get("/health")
     def health():
-        # Check the database without exposing connection details.
         try:
             db.session.execute(text("SELECT 1"))
-            db.session.remove()
             return jsonify({"status": "ok"}), 200
-        except Exception:
-            app.logger.exception("MundoMix health check failed")
+        except SQLAlchemyError:
             db.session.rollback()
-            db.session.remove()
+            app.logger.exception("MundoMix health check failed")
             return jsonify({"status": "error"}), 503
+        finally:
+            db.session.remove()
 
     @app.get("/.well-known/appspecific/com.chrome.devtools.json")
     def chrome_devtools_config():
-        """Public minimal response requested automatically by Chrome DevTools."""
         return jsonify({}), 200
 
     @app.context_processor
     def inject_globals():
         from models.settings import Setting
 
+        settings = {}
         try:
             settings = {s.key: s.value for s in Setting.query.all()}
-        except Exception:
-            # A previous PostgreSQL error can leave the transaction aborted.
-            # Roll back before the error page or another request performs a query.
+        except SQLAlchemyError:
+            # A failed request must not be followed by another DB exception
+            # while rendering the error page or a subsequent template.
             db.session.rollback()
-            app.logger.exception("Failed to load site settings in context processor")
-            settings = {}
+            app.logger.exception("Could not load site settings for template globals")
         cart = session.get("cart", {})
-        cart_count = sum(int(v) for v in cart.values()) if cart else 0
+        cart_count = 0
+        for value in cart.values() if isinstance(cart, dict) else []:
+            try:
+                cart_count += max(0, int(value))
+            except (TypeError, ValueError):
+                continue
         return {"site_settings": settings, "cart_count": cart_count}
 
     @app.errorhandler(403)
@@ -98,11 +100,10 @@ def create_app():
 
     @app.errorhandler(500)
     def server_error(error):
-        app.logger.error(
-            "Unhandled MundoMix server error: %s",
-            error,
-            exc_info=(type(error), error, error.__traceback__),
-        )
+        # Roll back before rendering: the original exception may have left a
+        # PostgreSQL transaction in an aborted state.
+        db.session.rollback()
+        app.logger.error("Unhandled MundoMix server error: %s", error, exc_info=True)
         return render_template("errors/500.html"), 500
 
     return app

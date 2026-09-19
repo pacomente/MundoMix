@@ -1,14 +1,17 @@
-from functools import wraps
-from decimal import Decimal, InvalidOperation
-import json
-from uuid import uuid4
+from __future__ import annotations
 
-from flask import Blueprint, render_template, request, redirect, url_for, session, flash, current_app
-from werkzeug.security import check_password_hash
+from decimal import Decimal, InvalidOperation
+from functools import wraps
+from urllib.parse import urlparse
+
+from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from sqlalchemy import desc, func, select
+from sqlalchemy.exc import SQLAlchemyError
+from werkzeug.security import check_password_hash
+
 from extensions import db
-from models import Product, Category, Banner, Order, OrderItem, Admin, Setting
-from services.cloudinary_service import upload_image, delete_image
+from models import Admin, Banner, Category, Order, OrderItem, Product, Setting
+from services.cloudinary_service import delete_image, upload_image
 from slugify import make_slug
 
 admin_bp = Blueprint("admin", __name__)
@@ -24,6 +27,15 @@ def admin_required(fn):
     return wrapper
 
 
+def safe_next(value):
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
+        return None
+    return value
+
+
 def parse_money(value):
     try:
         amount = Decimal(str(value).replace(",", "."))
@@ -35,7 +47,7 @@ def parse_money(value):
 
 
 def unique_slug(name, current_id=None):
-    base = make_slug(name)
+    base = make_slug(name) or "producto"
     slug = base
     i = 2
     while True:
@@ -48,16 +60,41 @@ def unique_slug(name, current_id=None):
         i += 1
 
 
-def _public_ids_for_product(item):
-    return [x for x in [item.cloudinary_public_id] + item.additional_public_id_list if x]
+def unique_category_slug(name, current_id=None):
+    base = make_slug(name) or "categoria"
+    slug = base
+    i = 2
+    while True:
+        query = Category.query.filter_by(slug=slug)
+        if current_id:
+            query = query.filter(Category.id != current_id)
+        if not query.first():
+            return slug
+        slug = f"{base}-{i}"
+        i += 1
 
 
-def _cleanup_uploaded(uploaded):
-    for result in uploaded:
+def _upload_many(files, folder):
+    uploaded = []
+    for file in files:
+        if file and file.filename:
+            uploaded.append(upload_image(file, folder))
+    return uploaded
+
+
+def _cleanup_assets(assets):
+    for asset in assets:
         try:
-            delete_image(result.get("public_id"))
+            delete_image(asset.get("public_id"))
         except Exception:
-            current_app.logger.exception("Cloudinary cleanup failed for %s", result.get("public_id"))
+            current_app.logger.exception("Could not clean up Cloudinary asset %s", asset.get("public_id"))
+
+
+def _delete_asset_or_keep_reference(public_id):
+    """Delete a Cloudinary asset and only let the caller clear DB afterwards."""
+    if not public_id:
+        return
+    delete_image(public_id)
 
 
 @admin_bp.route("/login", methods=["GET", "POST"])
@@ -69,7 +106,7 @@ def login():
         if admin and check_password_hash(admin.password_hash, password):
             session.clear()
             session["admin_id"] = admin.id
-            return redirect(request.args.get("next") or url_for("admin.dashboard"))
+            return redirect(safe_next(request.args.get("next")) or url_for("admin.dashboard"))
         flash("Usuario o contraseña incorrectos.", "error")
     return render_template("admin/login.html")
 
@@ -86,17 +123,29 @@ def logout():
 @admin_required
 def dashboard():
     sales = db.session.query(func.coalesce(func.sum(Order.total), 0)).filter(Order.status != "Cancelado").scalar() or 0
-    best = (db.session.query(OrderItem.product_name_snapshot, func.sum(OrderItem.quantity).label("qty"))
-            .join(Order, Order.id == OrderItem.order_id)
-            .filter(Order.status != "Cancelado")
-            .group_by(OrderItem.product_name_snapshot)
-            .order_by(desc("qty")).limit(5).all())
-    return render_template("admin/dashboard.html", total_products=Product.query.count(),
-        active_products=Product.query.filter_by(active=True).count(), out_stock=Product.query.filter(Product.stock <= 0).count(),
-        featured_products=Product.query.filter_by(featured=True, active=True).count(), total_orders=Order.query.count(),
-        new_orders=Order.query.filter_by(status="Nuevo").count(), confirmed_orders=Order.query.filter_by(status="Confirmado").count(),
-        delivered_orders=Order.query.filter_by(status="Entregado").count(), sales=Decimal(str(sales)),
-        recent_orders=Order.query.order_by(desc(Order.created_at)).limit(8).all(), best_products=best)
+    best = (
+        db.session.query(OrderItem.product_name_snapshot, func.sum(OrderItem.quantity).label("qty"))
+        .join(Order, Order.id == OrderItem.order_id)
+        .filter(Order.status != "Cancelado")
+        .group_by(OrderItem.product_name_snapshot)
+        .order_by(desc("qty"))
+        .limit(5)
+        .all()
+    )
+    return render_template(
+        "admin/dashboard.html",
+        total_products=Product.query.count(),
+        active_products=Product.query.filter_by(active=True).count(),
+        out_stock=Product.query.filter(Product.stock <= 0).count(),
+        featured_products=Product.query.filter_by(featured=True, active=True).count(),
+        total_orders=Order.query.count(),
+        new_orders=Order.query.filter_by(status="Nuevo").count(),
+        confirmed_orders=Order.query.filter_by(status="Confirmado").count(),
+        delivered_orders=Order.query.filter_by(status="Entregado").count(),
+        sales=Decimal(str(sales)),
+        recent_orders=Order.query.order_by(desc(Order.created_at)).limit(8).all(),
+        best_products=best,
+    )
 
 
 @admin_bp.route("/productos")
@@ -116,8 +165,8 @@ def product_form(id=None):
         return redirect(url_for("admin.products"))
 
     if request.method == "POST":
-        uploaded = []
-        old_main_public_id = item.cloudinary_public_id if item else None
+        new_assets = []
+        old_main_id = item.cloudinary_public_id if item else None
         try:
             name = request.form.get("name", "").strip()
             sku = request.form.get("sku", "").strip()
@@ -130,8 +179,7 @@ def product_form(id=None):
             if stock < 0:
                 raise ValueError("El stock no puede ser negativo.")
 
-            is_new = item is None
-            if is_new:
+            if not item:
                 item = Product(name=name, sku=sku, slug="temp", price_delivery=0, price_pickup=0)
                 db.session.add(item)
                 db.session.flush()
@@ -147,47 +195,43 @@ def product_form(id=None):
             item.featured = "featured" in request.form
             item.active = "active" in request.form
 
-            main_file = request.files.get("image")
-            if main_file and main_file.filename:
-                result = upload_image(main_file, "mundomix/products", public_id=f"product-{item.id}-main-{uuid4().hex}")
-                uploaded.append(result)
-                item.image = result["secure_url"]
-                item.cloudinary_public_id = result["public_id"]
+            image_file = request.files.get("image")
+            if image_file and image_file.filename:
+                asset = upload_image(image_file, "products")
+                new_assets.append(asset)
+                item.image = asset["secure_url"]
+                item.cloudinary_public_id = asset["public_id"]
 
-            existing_urls = item.image_list
-            existing_public_ids = item.additional_public_id_list
-            new_urls, new_public_ids = [], []
-            for file in request.files.getlist("additional_images"):
-                if not file or not file.filename:
-                    continue
-                result = upload_image(file, "mundomix/products", public_id=f"product-{item.id}-extra-{uuid4().hex}")
-                uploaded.append(result)
-                new_urls.append(result["secure_url"])
-                new_public_ids.append(result["public_id"])
-
-            if new_urls:
-                item.additional_images = ",".join(existing_urls + new_urls)
-                item.additional_image_public_ids = json.dumps(existing_public_ids + new_public_ids)
-            elif is_new and not item.additional_images:
-                item.additional_images = ""
-                item.additional_image_public_ids = "[]"
+            extra_assets = _upload_many(request.files.getlist("additional_images"), "products")
+            new_assets.extend(extra_assets)
+            if extra_assets:
+                existing = item.additional_image_assets
+                existing.extend(extra_assets)
+                item.set_additional_image_assets(existing)
 
             db.session.commit()
-
-            # Only delete the old image after the new reference is safely committed.
-            if main_file and main_file.filename and old_main_public_id and old_main_public_id != item.cloudinary_public_id:
-                try:
-                    delete_image(old_main_public_id)
-                except Exception:
-                    current_app.logger.exception("Old product image cleanup failed for product %s", item.id)
-                    flash("Producto guardado, pero no se pudo limpiar la imagen anterior de Cloudinary.", "error")
-
-            flash("Producto guardado correctamente.", "success")
-            return redirect(url_for("admin.products"))
+        except (ValueError, SQLAlchemyError) as exc:
+            db.session.rollback()
+            _cleanup_assets(new_assets)
+            current_app.logger.exception("Could not save product")
+            flash(str(exc), "error")
+            return render_template("admin/product_form.html", product=item, categories=categories)
         except Exception as exc:
             db.session.rollback()
-            _cleanup_uploaded(uploaded)
-            flash(str(exc), "error")
+            _cleanup_assets(new_assets)
+            current_app.logger.exception("Unexpected product save error")
+            flash("No se pudo guardar el producto. Revisá el formulario y los logs.", "error")
+            return render_template("admin/product_form.html", product=item, categories=categories)
+
+        # Old assets are removed only after the DB points to the new asset.
+        if old_main_id and old_main_id != item.cloudinary_public_id:
+            try:
+                delete_image(old_main_id)
+            except Exception:
+                current_app.logger.exception("Could not delete replaced product image %s", old_main_id)
+                flash("Producto guardado, pero la imagen anterior quedó pendiente de limpieza en Cloudinary.", "error")
+        flash("Producto guardado correctamente.", "success")
+        return redirect(url_for("admin.products"))
 
     return render_template("admin/product_form.html", product=item, categories=categories)
 
@@ -196,16 +240,21 @@ def product_form(id=None):
 @admin_required
 def product_delete(id):
     item = Product.query.get_or_404(id)
-    public_ids = _public_ids_for_product(item)
+    assets = []
+    if item.cloudinary_public_id:
+        assets.append(item.cloudinary_public_id)
+    assets.extend(a.get("public_id") for a in item.additional_image_assets if a.get("public_id"))
     try:
-        for public_id in public_ids:
+        for public_id in assets:
             delete_image(public_id)
         db.session.delete(item)
         db.session.commit()
-        flash("Producto eliminado.", "success")
     except Exception as exc:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not delete product %s", id)
+        flash("No se pudo eliminar el producto porque una imagen de Cloudinary no pudo eliminarse.", "error")
+        return redirect(url_for("admin.products"))
+    flash("Producto eliminado.", "success")
     return redirect(url_for("admin.products"))
 
 
@@ -213,17 +262,19 @@ def product_delete(id):
 @admin_required
 def product_image_delete(id):
     item = Product.query.get_or_404(id)
-    old_public_id = item.cloudinary_public_id
+    public_id = item.cloudinary_public_id
     try:
-        if old_public_id:
-            delete_image(old_public_id)
+        if public_id:
+            delete_image(public_id)
         item.image = None
         item.cloudinary_public_id = None
         db.session.commit()
-        flash("Imagen principal eliminada.", "success")
-    except Exception as exc:
+    except Exception:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not delete main product image %s", id)
+        flash("No se pudo eliminar la imagen de Cloudinary.", "error")
+        return redirect(url_for("admin.product_form", id=id))
+    flash("Imagen principal eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
 
@@ -231,24 +282,23 @@ def product_image_delete(id):
 @admin_required
 def product_extra_image_delete(id, index):
     item = Product.query.get_or_404(id)
-    urls = item.image_list
-    public_ids = item.additional_public_id_list
-    if not (0 <= index < len(urls)):
+    assets = item.additional_image_assets
+    if not 0 <= index < len(assets):
+        flash("Imagen adicional no encontrada.", "error")
         return redirect(url_for("admin.product_form", id=id))
-    public_id = public_ids[index] if index < len(public_ids) else None
+    asset = assets[index]
     try:
-        if public_id:
-            delete_image(public_id)
-        urls.pop(index)
-        if index < len(public_ids):
-            public_ids.pop(index)
-        item.additional_images = ",".join(urls)
-        item.additional_image_public_ids = json.dumps(public_ids)
+        if asset.get("public_id"):
+            delete_image(asset["public_id"])
+        assets.pop(index)
+        item.set_additional_image_assets(assets)
         db.session.commit()
-        flash("Imagen adicional eliminada.", "success")
-    except Exception as exc:
+    except Exception:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not delete additional product image %s[%s]", id, index)
+        flash("No se pudo eliminar la imagen adicional de Cloudinary.", "error")
+        return redirect(url_for("admin.product_form", id=id))
+    flash("Imagen adicional eliminada.", "success")
     return redirect(url_for("admin.product_form", id=id))
 
 
@@ -256,8 +306,14 @@ def product_extra_image_delete(id, index):
 @admin_required
 def product_toggle(id):
     item = Product.query.get_or_404(id)
-    item.active = not item.active
-    db.session.commit()
+    try:
+        item.active = not item.active
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("Could not toggle product %s", id)
+        flash("No se pudo actualizar el producto.", "error")
+        return redirect(url_for("admin.products"))
     flash(f"Producto {'activado' if item.active else 'desactivado'}.", "success")
     return redirect(url_for("admin.products"))
 
@@ -267,25 +323,33 @@ def product_toggle(id):
 @admin_required
 def categories():
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
-        if not name:
-            flash("El nombre es obligatorio.", "error")
-        elif Category.query.filter_by(name=name).first():
-            flash("La categoría ya existe.", "error")
-        else:
-            base_slug = make_slug(name)
-            slug = base_slug
-            i = 2
-            while Category.query.filter_by(slug=slug).first():
-                slug = f"{base_slug}-{i}"
-                i += 1
-            try:
-                db.session.add(Category(name=name, slug=slug, description=request.form.get("description", "").strip(), active=True))
-                db.session.commit()
-                flash("Categoría creada.", "success")
-            except Exception as exc:
-                db.session.rollback()
-                flash(str(exc), "error")
+        new_assets = []
+        try:
+            name = request.form.get("name", "").strip()
+            if not name:
+                raise ValueError("El nombre es obligatorio.")
+            if Category.query.filter_by(name=name).first():
+                raise ValueError("La categoría ya existe.")
+            image = request.files.get("image")
+            asset = upload_image(image, "categories") if image and image.filename else None
+            if asset:
+                new_assets.append(asset)
+            category = Category(
+                name=name,
+                slug=unique_category_slug(name),
+                description=request.form.get("description", "").strip(),
+                image=asset["secure_url"] if asset else None,
+                cloudinary_public_id=asset["public_id"] if asset else None,
+                active=True,
+            )
+            db.session.add(category)
+            db.session.commit()
+            flash("Categoría creada.", "success")
+        except Exception as exc:
+            db.session.rollback()
+            _cleanup_assets(new_assets)
+            current_app.logger.exception("Could not create category")
+            flash(str(exc), "error")
     return render_template("admin/categories.html", categories=Category.query.order_by(Category.name).all())
 
 
@@ -293,44 +357,39 @@ def categories():
 @admin_required
 def category_edit(id):
     item = Category.query.get_or_404(id)
-    name = request.form.get("name", item.name).strip()
-    if not name:
-        flash("El nombre es obligatorio.", "error")
-        return redirect(url_for("admin.categories"))
-    duplicate = Category.query.filter(Category.name == name, Category.id != item.id).first()
-    if duplicate:
-        flash("Ya existe otra categoría con ese nombre.", "error")
-        return redirect(url_for("admin.categories"))
-    uploaded = None
     old_public_id = item.cloudinary_public_id
+    new_asset = None
     try:
+        name = request.form.get("name", item.name).strip()
+        if not name:
+            raise ValueError("El nombre es obligatorio.")
+        duplicate = Category.query.filter(Category.name == name, Category.id != item.id).first()
+        if duplicate:
+            raise ValueError("Ya existe otra categoría con ese nombre.")
         item.name = name
         item.description = request.form.get("description", "").strip()
-        base_slug = make_slug(name)
-        slug = base_slug
-        i = 2
-        while Category.query.filter(Category.slug == slug, Category.id != item.id).first():
-            slug = f"{base_slug}-{i}"
-            i += 1
-        item.slug = slug
-        file = request.files.get("image")
-        if file and file.filename:
-            uploaded = upload_image(file, "mundomix/categories", public_id=f"category-{item.id}-{uuid4().hex}")
-            item.image = uploaded["secure_url"]
-            item.cloudinary_public_id = uploaded["public_id"]
+        item.slug = unique_category_slug(name, item.id)
+        image = request.files.get("image")
+        if image and image.filename:
+            new_asset = upload_image(image, "categories")
+            item.image = new_asset["secure_url"]
+            item.cloudinary_public_id = new_asset["public_id"]
         db.session.commit()
-        if uploaded and old_public_id:
-            try:
-                delete_image(old_public_id)
-            except Exception:
-                current_app.logger.exception("Old category image cleanup failed for %s", item.id)
-                flash("Categoría guardada, pero no se pudo limpiar la imagen anterior.", "error")
-        flash("Categoría actualizada.", "success")
     except Exception as exc:
         db.session.rollback()
-        if uploaded:
-            _cleanup_uploaded([uploaded])
+        if new_asset:
+            _cleanup_assets([new_asset])
+        current_app.logger.exception("Could not edit category %s", id)
         flash(str(exc), "error")
+        return redirect(url_for("admin.categories"))
+
+    if old_public_id and old_public_id != item.cloudinary_public_id:
+        try:
+            delete_image(old_public_id)
+        except Exception:
+            current_app.logger.exception("Could not delete replaced category image %s", old_public_id)
+            flash("Categoría actualizada, pero la imagen anterior quedó pendiente de limpieza.", "error")
+    flash("Categoría actualizada.", "success")
     return redirect(url_for("admin.categories"))
 
 
@@ -338,26 +397,15 @@ def category_edit(id):
 @admin_required
 def category_toggle(id):
     item = Category.query.get_or_404(id)
-    item.active = not item.active
-    db.session.commit()
-    flash(f"Categoría {'activada' if item.active else 'desactivada'}.", "success")
-    return redirect(url_for("admin.categories"))
-
-
-@admin_bp.post("/categorias/<int:id>/imagen/eliminar")
-@admin_required
-def category_image_delete(id):
-    item = Category.query.get_or_404(id)
     try:
-        if item.cloudinary_public_id:
-            delete_image(item.cloudinary_public_id)
-        item.image = None
-        item.cloudinary_public_id = None
+        item.active = not item.active
         db.session.commit()
-        flash("Imagen de categoría eliminada.", "success")
-    except Exception as exc:
+    except SQLAlchemyError:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not toggle category %s", id)
+        flash("No se pudo actualizar la categoría.", "error")
+        return redirect(url_for("admin.categories"))
+    flash(f"Categoría {'activada' if item.active else 'desactivada'}.", "success")
     return redirect(url_for("admin.categories"))
 
 
@@ -365,19 +413,20 @@ def category_image_delete(id):
 @admin_required
 def category_delete(id):
     item = Category.query.get_or_404(id)
+    public_id = item.cloudinary_public_id
     try:
-        if item.cloudinary_public_id:
-            delete_image(item.cloudinary_public_id)
-        item.image = None
-        item.cloudinary_public_id = None
+        if public_id:
+            delete_image(public_id)
         for product in item.products:
             product.category_id = None
         db.session.delete(item)
         db.session.commit()
-        flash("Categoría eliminada; los productos quedaron sin categoría.", "success")
-    except Exception as exc:
+    except Exception:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not delete category %s", id)
+        flash("No se pudo eliminar la categoría porque su imagen no pudo eliminarse.", "error")
+        return redirect(url_for("admin.categories"))
+    flash("Categoría eliminada; los productos quedaron sin categoría.", "success")
     return redirect(url_for("admin.categories"))
 
 
@@ -385,24 +434,31 @@ def category_delete(id):
 @admin_required
 def banners():
     if request.method == "POST":
-        uploaded = None
+        new_asset = None
         try:
-            file = request.files.get("image")
-            if not file or not file.filename:
+            image = request.files.get("image")
+            if not image or not image.filename:
                 raise ValueError("La imagen del banner es obligatoria.")
-            uploaded = upload_image(file, "mundomix/banners", public_id=f"banner-{uuid4().hex}")
-            db.session.add(Banner(
-                title=request.form.get("title", "").strip(), subtitle=request.form.get("subtitle", "").strip(),
-                image=uploaded["secure_url"], cloudinary_public_id=uploaded["public_id"],
-                button_text=request.form.get("button_text", "").strip(), button_url=request.form.get("button_url", "").strip(),
-                display_order=request.form.get("display_order", 0, type=int), active="active" in request.form,
-            ))
+            new_asset = upload_image(image, "banners")
+            db.session.add(
+                Banner(
+                    title=request.form.get("title", "").strip(),
+                    subtitle=request.form.get("subtitle", "").strip(),
+                    image=new_asset["secure_url"],
+                    cloudinary_public_id=new_asset["public_id"],
+                    button_text=request.form.get("button_text", "").strip(),
+                    button_url=request.form.get("button_url", "").strip(),
+                    display_order=request.form.get("display_order", 0, type=int),
+                    active="active" in request.form,
+                )
+            )
             db.session.commit()
             flash("Banner creado.", "success")
         except Exception as exc:
             db.session.rollback()
-            if uploaded:
-                _cleanup_uploaded([uploaded])
+            if new_asset:
+                _cleanup_assets([new_asset])
+            current_app.logger.exception("Could not create banner")
             flash(str(exc), "error")
     return render_template("admin/banners.html", banners=Banner.query.order_by(Banner.display_order, Banner.id).all())
 
@@ -411,8 +467,14 @@ def banners():
 @admin_required
 def banner_toggle(id):
     item = Banner.query.get_or_404(id)
-    item.active = not item.active
-    db.session.commit()
+    try:
+        item.active = not item.active
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("Could not toggle banner %s", id)
+        flash("No se pudo actualizar el banner.", "error")
+        return redirect(url_for("admin.banners"))
     flash("Banner actualizado.", "success")
     return redirect(url_for("admin.banners"))
 
@@ -421,8 +483,8 @@ def banner_toggle(id):
 @admin_required
 def banner_edit(id):
     item = Banner.query.get_or_404(id)
-    uploaded = None
     old_public_id = item.cloudinary_public_id
+    new_asset = None
     try:
         item.title = request.form.get("title", "").strip()
         item.subtitle = request.form.get("subtitle", "").strip()
@@ -430,41 +492,27 @@ def banner_edit(id):
         item.button_url = request.form.get("button_url", "").strip()
         item.display_order = request.form.get("display_order", 0, type=int)
         item.active = "active" in request.form
-        file = request.files.get("image")
-        if file and file.filename:
-            uploaded = upload_image(file, "mundomix/banners", public_id=f"banner-{item.id}-{uuid4().hex}")
-            item.image = uploaded["secure_url"]
-            item.cloudinary_public_id = uploaded["public_id"]
+        image = request.files.get("image")
+        if image and image.filename:
+            new_asset = upload_image(image, "banners")
+            item.image = new_asset["secure_url"]
+            item.cloudinary_public_id = new_asset["public_id"]
         db.session.commit()
-        if uploaded and old_public_id:
-            try:
-                delete_image(old_public_id)
-            except Exception:
-                current_app.logger.exception("Old banner image cleanup failed for %s", item.id)
-                flash("Banner guardado, pero no se pudo limpiar la imagen anterior.", "error")
-        flash("Banner actualizado.", "success")
     except Exception as exc:
         db.session.rollback()
-        if uploaded:
-            _cleanup_uploaded([uploaded])
+        if new_asset:
+            _cleanup_assets([new_asset])
+        current_app.logger.exception("Could not edit banner %s", id)
         flash(str(exc), "error")
-    return redirect(url_for("admin.banners"))
+        return redirect(url_for("admin.banners"))
 
-
-@admin_bp.post("/banners/<int:id>/imagen/eliminar")
-@admin_required
-def banner_image_delete(id):
-    item = Banner.query.get_or_404(id)
-    try:
-        if item.cloudinary_public_id:
-            delete_image(item.cloudinary_public_id)
-        item.image = None
-        item.cloudinary_public_id = None
-        db.session.commit()
-        flash("Imagen del banner eliminada.", "success")
-    except Exception as exc:
-        db.session.rollback()
-        flash(str(exc), "error")
+    if old_public_id and old_public_id != item.cloudinary_public_id:
+        try:
+            delete_image(old_public_id)
+        except Exception:
+            current_app.logger.exception("Could not delete replaced banner image %s", old_public_id)
+            flash("Banner actualizado, pero la imagen anterior quedó pendiente de limpieza.", "error")
+    flash("Banner actualizado.", "success")
     return redirect(url_for("admin.banners"))
 
 
@@ -477,10 +525,12 @@ def banner_delete(id):
             delete_image(item.cloudinary_public_id)
         db.session.delete(item)
         db.session.commit()
-        flash("Banner eliminado.", "success")
-    except Exception as exc:
+    except Exception:
         db.session.rollback()
-        flash(str(exc), "error")
+        current_app.logger.exception("Could not delete banner %s", id)
+        flash("No se pudo eliminar el banner porque su imagen no pudo eliminarse.", "error")
+        return redirect(url_for("admin.banners"))
+    flash("Banner eliminado.", "success")
     return redirect(url_for("admin.banners"))
 
 
@@ -498,40 +548,44 @@ def orders():
 @admin_bp.route("/pedidos/<int:id>", methods=["GET", "POST"])
 @admin_required
 def order_detail(id):
-    if request.method == "POST":
-        order = db.session.execute(select(Order).where(Order.id == id).with_for_update()).scalar_one_or_none()
-        if order is None:
-            return redirect(url_for("admin.orders"))
-        new_status = request.form.get("status")
-        if new_status not in STATUSES:
-            flash("Estado inválido.", "error")
-        elif new_status == "Confirmado" and order.status != "Confirmado":
-            product_ids = sorted({oi.product_id for oi in order.items if oi.product_id})
-            locked_products = {}
-            for product_id in product_ids:
-                product = db.session.execute(select(Product).where(Product.id == product_id).with_for_update()).scalar_one_or_none()
-                locked_products[product_id] = product
-            for oi in order.items:
-                if oi.product_id:
-                    product = locked_products.get(oi.product_id)
-                    if not product or product.stock < oi.quantity:
-                        db.session.rollback()
-                        flash(f"Stock insuficiente para {oi.product_name_snapshot}.", "error")
-                        order = Order.query.get_or_404(id)
-                        return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
-                    product.stock -= oi.quantity
-            order.status = new_status
-            db.session.commit()
-            flash("Pedido confirmado y stock descontado.", "success")
-        elif order.status == "Confirmado" and new_status != "Confirmado":
-            order.status = new_status
-            db.session.commit()
-            flash("Estado actualizado. El stock no se repone automáticamente.", "success")
+    try:
+        if request.method == "POST":
+            order = db.session.execute(select(Order).where(Order.id == id).with_for_update()).scalar_one_or_none()
+            if order is None:
+                return redirect(url_for("admin.orders"))
+            new_status = request.form.get("status")
+            if new_status not in STATUSES:
+                raise ValueError("Estado inválido.")
+            if new_status == "Confirmado" and not order.stock_deducted:
+                product_ids = sorted({oi.product_id for oi in order.items if oi.product_id})
+                locked_products = {}
+                for product_id in product_ids:
+                    product = db.session.execute(select(Product).where(Product.id == product_id).with_for_update()).scalar_one_or_none()
+                    locked_products[product_id] = product
+                for oi in order.items:
+                    if oi.product_id:
+                        product = locked_products.get(oi.product_id)
+                        if not product or product.stock < oi.quantity:
+                            raise ValueError(f"Stock insuficiente para {oi.product_name_snapshot}.")
+                        product.stock -= oi.quantity
+                order.stock_deducted = True
+                order.status = new_status
+                db.session.commit()
+                flash("Pedido confirmado y stock descontado.", "success")
+            else:
+                order.status = new_status
+                db.session.commit()
+                flash("Pedido actualizado.", "success")
         else:
-            order.status = new_status
-            db.session.commit()
-            flash("Pedido actualizado.", "success")
-    else:
+            order = Order.query.get_or_404(id)
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), "error")
+        order = Order.query.get_or_404(id)
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("Could not update order %s", id)
+        flash("No se pudo actualizar el pedido.", "error")
         order = Order.query.get_or_404(id)
     return render_template("admin/order_detail.html", order=order, statuses=STATUSES)
 
@@ -551,8 +605,9 @@ def settings():
                 row.value = request.form.get(key, "").strip()
             db.session.commit()
             flash("Configuración guardada.", "success")
-        except Exception as exc:
+        except SQLAlchemyError:
             db.session.rollback()
-            flash(str(exc), "error")
+            current_app.logger.exception("Could not save settings")
+            flash("No se pudo guardar la configuración.", "error")
     settings = {s.key: s.value for s in Setting.query.all()}
     return render_template("admin/settings.html", settings=settings)

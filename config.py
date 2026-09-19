@@ -6,29 +6,34 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 
+
 def _database_uri() -> str:
     value = os.getenv("DATABASE_URL", "").strip()
     environment = os.getenv("FLASK_ENV", "development").strip().lower()
     if not value:
         if environment == "production":
             raise RuntimeError(
-                "DATABASE_URL no está configurada. En producción MundoMix requiere PostgreSQL."
+                "DATABASE_URL no está configurada. En producción MundoMix requiere PostgreSQL; "
+                "definí DATABASE_URL en .env o en el entorno del servidor."
             )
         db_path = (BASE_DIR / "instance" / "mundomix.db").resolve()
         return f"sqlite:///{db_path.as_posix()}"
     if environment == "production" and value.startswith("sqlite:"):
-        raise RuntimeError("DATABASE_URL apunta a SQLite pero producción requiere PostgreSQL.")
+        raise RuntimeError(
+            "DATABASE_URL apunta a SQLite pero producción requiere PostgreSQL. "
+            "Configurá, por ejemplo, postgresql+psycopg://usuario:password@host:5432/mundomix."
+        )
     if value.startswith("postgresql://"):
-        value = "postgresql+psycopg://" + value[len("postgresql://"):]
+        value = "postgresql+psycopg://" + value[len("postgresql://"): ]
     if value.startswith("postgres://"):
-        value = "postgresql+psycopg://" + value[len("postgres://"):]
-    if value.startswith("sqlite:///"):
-        raw_path = value[len("sqlite:///"):]
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = BASE_DIR / path
-        return f"sqlite:///{path.resolve().as_posix()}"
-    return value
+        value = "postgresql+psycopg://" + value[len("postgres://"): ]
+    if not value.startswith("sqlite:///"):
+        return value
+    raw_path = value[len("sqlite:///"): ]
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return f"sqlite:///{path.resolve().as_posix()}"
 
 
 class Config:
@@ -50,12 +55,12 @@ class Config:
     else:
         SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"timeout": 30}}
 
+    # Images are stored permanently in Cloudinary; Render/local filesystem is not the image store.
     MAX_CONTENT_LENGTH = 8 * 1024 * 1024
-    WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "")
-
     CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
     CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
     CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+    WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER", "")
 
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"

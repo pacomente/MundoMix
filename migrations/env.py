@@ -1,36 +1,33 @@
 from logging.config import fileConfig
 
-from flask import current_app
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
+from app import create_app
 from extensions import db
-from models import Admin, Banner, Category, Order, OrderItem, Product, Setting  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+app = create_app()
 target_metadata = db.metadata
 
 
-def get_engine():
-    return current_app.extensions["migrate"].db.engine
-
-
-def get_engine_url():
-    return str(get_engine().url).replace("%", "%%")
+def get_url():
+    return app.config["SQLALCHEMY_DATABASE_URI"]
 
 
 def run_migrations_offline():
-    context.configure(url=get_engine_url(), target_metadata=target_metadata, literal_binds=True, compare_type=True)
+    context.configure(url=get_url(), target_metadata=target_metadata, literal_binds=True, dialect_opts={"paramstyle": "named"})
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online():
-    connectable = get_engine()
+    connectable = db.engine
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True, compare_server_default=True)
         with context.begin_transaction():
             context.run_migrations()
 

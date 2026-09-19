@@ -5,7 +5,8 @@ class Banner(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(180), default="")
     subtitle = db.Column(db.String(300), default="")
-    image = db.Column(db.String(500))
+    # Kept as `image` for compatibility; it now contains Cloudinary secure_url.
+    image = db.Column(db.String(1000))
     cloudinary_public_id = db.Column(db.String(255))
     button_text = db.Column(db.String(80), default="")
     button_url = db.Column(db.String(300), default="")
