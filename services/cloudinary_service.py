@@ -21,12 +21,15 @@ ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-def configure_cloudinary() -> None:
-    cloud_name = current_app.config.get("CLOUDINARY_CLOUD_NAME", "").strip()
-    api_key = current_app.config.get("CLOUDINARY_API_KEY", "").strip()
-    api_secret = current_app.config.get("CLOUDINARY_API_SECRET", "").strip()
+def configure_cloudinary(app=None) -> None:
+    config = app.config if app is not None else current_app.config
+
+    cloud_name = config.get("CLOUDINARY_CLOUD_NAME", "").strip()
+    api_key = config.get("CLOUDINARY_API_KEY", "").strip()
+    api_secret = config.get("CLOUDINARY_API_SECRET", "").strip()
+
     if not all((cloud_name, api_key, api_secret)):
-        if current_app.config.get("ENVIRONMENT") == "production":
+        if config.get("ENVIRONMENT") == "production":
             raise RuntimeError(
                 "Cloudinary no está configurado. Definí CLOUDINARY_CLOUD_NAME, "
                 "CLOUDINARY_API_KEY y CLOUDINARY_API_SECRET en producción."
@@ -35,9 +38,10 @@ def configure_cloudinary() -> None:
     cloudinary.config(cloud_name=cloud_name, api_key=api_key, api_secret=api_secret, secure=True)
 
 
-def _ensure_configured() -> None:
-    configure_cloudinary()
-    if not current_app.config.get("CLOUDINARY_CLOUD_NAME"):
+def _ensure_configured(app=None) -> None:
+    configure_cloudinary(app)
+    config = app.config if app is not None else current_app.config
+    if not config.get("CLOUDINARY_CLOUD_NAME"):
         raise RuntimeError("Cloudinary no está configurado para esta aplicación.")
 
 
@@ -83,7 +87,12 @@ def validate_image(file_storage) -> dict:
     if actual_format != expected:
         raise ValueError("La extensión no coincide con el formato real de la imagen.")
 
-    return {"extension": ext, "mime": declared_mime or f"image/{'jpeg' if actual_format == 'JPEG' else actual_format.lower()}", "size": size, "format": actual_format}
+    return {
+        "extension": ext,
+        "mime": declared_mime or f"image/{'jpeg' if actual_format == 'JPEG' else actual_format.lower()}",
+        "size": size,
+        "format": actual_format,
+    }
 
 
 def upload_image(file_storage, folder: str) -> dict:
@@ -119,9 +128,6 @@ def delete_image(public_id: str | None) -> bool:
 
 def replace_image(file_storage, old_public_id: str | None, folder: str) -> dict:
     """Upload the replacement first; delete the old asset only after DB commit."""
-    # old_public_id is intentionally not deleted here because the database
-    # transaction belongs to the route. This prevents losing the old image
-    # when the new upload or DB commit fails.
     return upload_image(file_storage, folder)
 
 
@@ -143,7 +149,6 @@ def extract_public_id_from_cloudinary_url(url: str | None) -> str | None:
     parts = path.split("/")
     while parts and (parts[0].startswith("v") and parts[0][1:].isdigit()):
         parts.pop(0)
-    # Remove common transformation segments when present.
     while parts and ("=" in parts[0] or parts[0].split(",")[0] in {"f_auto", "q_auto", "c_fill", "c_limit"}):
         parts.pop(0)
     if not parts:
