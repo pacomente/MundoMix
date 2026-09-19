@@ -30,7 +30,7 @@ def create_app():
     # In production Cloudinary credentials are mandatory. In development an
     # explicit missing configuration is allowed so the storefront can boot,
     # but image upload operations fail with a clear message.
-    configure_cloudinary()
+    configure_cloudinary(app)
 
     db.init_app(app)
     migrate.init_app(app, db)
